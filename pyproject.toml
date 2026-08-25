@@ -1,0 +1,54 @@
+[project]
+name = "cqlib-qml"
+version = "0.1.0"
+description = "Quantum machine learning package based on Cqlib"
+authors = [
+    { name = "China Telecom Quantum Group Quantum Computing Team", email = "tianyan@chinatelecom.cn" },
+]
+license = { file = "LICENSE" }
+readme = "README.md"
+requires-python = ">=3.10"
+classifiers = [
+    "Environment :: Console",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Software Development :: Libraries",
+]
+keywords = [
+    "cqlib",
+    "quantum machine learning",
+    "quantum neural network",
+    "hybrid quantum classical",
+    "quantum kernel",
+    "quantum support vector machine",
+    "variational quantum classifier",
+    "quantum image encoding",
+    "quantum computing",
+]
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = "requirements.txt" }
+
+[project.urls]
+Homepage = "https://qc.zdxlz.com/"
+Documentation = "https://qc.zdxlz.com/learn/#/resource/informationSpace"
+Repository = "https://github.com/cq-lib/cqlib-qml"
+Issues = "https://github.com/cq-lib/cqlib-qml/issues"
+
+[tool.setuptools.packages.find]
+include = ["cqlib_qml*"]
+
+[build-system]
+requires = ["setuptools>=80.0", "wheel"]
+build-backend = "setuptools.build_meta"
