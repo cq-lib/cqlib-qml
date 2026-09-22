@@ -6,7 +6,7 @@ This module provides utilities for computing the gradient matrices of
 parameterized quantum gates. The gradient matrices are essential for
 the adjoint differentiation method.
 
-The module extends the cqlib Operation class with gradient computation
+The module extends the cqlib ValueOperation class with gradient computation
 methods for various quantum gates including:
     - Single-qubit rotations: RX, RY, RZ
     - Two-qubit rotations: RXX, RXY, RZX, RZZ
@@ -33,10 +33,10 @@ Examples:
             [0.5*sin(θ/2), -0.5*cos(θ/2)]])]
 """
 
-# from cqlib.circuit import Circuit, McGate, StandardGate
+# from cqlib.circuit import Circuit, MCGate, StandardGate
 import numpy as np
 from scipy.linalg import block_diag
-from cqlib.circuit import Operation
+from cqlib.circuit import ValueOperation
 
 
 def _standard_gate_grad(self, gate):
@@ -48,7 +48,7 @@ def _standard_gate_grad(self, gate):
     list of matrices, one for each parameter.
 
     Args:
-        self (Operation): The operation instance.
+        self (ValueOperation): The operation instance.
         gate (StandardGate): The standard gate to differentiate.
 
     Returns:
@@ -76,7 +76,7 @@ def _standard_gate_grad(self, gate):
 
     Examples:
         >>> from cqlib.circuit import StandardGate
-        >>> op = Operation(StandardGate.RY, qubits=[0], params=[0.5])
+        >>> op = ValueOperation(StandardGate.RY, qubits=[0], params=[0.5])
         >>> grad = _standard_gate_grad(op, StandardGate.RY)
         >>> print(grad[0].shape)
         (2, 2)
@@ -223,7 +223,7 @@ def grad_matrix(self):
     of the gate's unitary with respect to its parameters.
 
     Args:
-        self (Operation): The operation instance.
+        self (ValueOperation): The operation instance.
 
     Returns:
         list: List of gradient matrices. Each matrix has the same shape
@@ -235,17 +235,17 @@ def grad_matrix(self):
 
     Examples:
         >>> # For a standard gate
-        >>> op = Operation(StandardGate.RY, qubits=[0], params=[0.5])
+        >>> op = ValueOperation(StandardGate.RY, qubits=[0], params=[0.5])
         >>> grad = op.grad_matrix()
         >>>
         >>> # For a multi-controlled gate
-        >>> from cqlib.circuit import McGate, StandardGate
-        >>> cgate = McGate(2, StandardGate.RY)
-        >>> op = Operation(cgate, qubits=[0, 1, 2], params=[0.5])
+        >>> from cqlib.circuit import MCGate, StandardGate
+        >>> cgate = MCGate(2, StandardGate.RY)
+        >>> op = ValueOperation(cgate, qubits=[0, 1, 2], params=[0.5])
         >>> grad = op.grad_matrix()
         >>>
         >>> # For a gate without parameters
-        >>> op = Operation(StandardGate.H, qubits=[0])
+        >>> op = ValueOperation(StandardGate.H, qubits=[0])
         >>> grad = op.grad_matrix()  # Returns None
     """
     if self.instruction.mc_gate is not None:
@@ -265,5 +265,5 @@ def grad_matrix(self):
     return None
 
 
-Operation._standard_gate_grad = _standard_gate_grad
-Operation.grad_matrix = grad_matrix
+ValueOperation._standard_gate_grad = _standard_gate_grad
+ValueOperation.grad_matrix = grad_matrix

@@ -32,7 +32,7 @@ import numbers
 import numpy as np
 from typing import Union, Sequence, Optional, List, Dict
 
-from cqlib.circuit import Circuit, Parameter, Qubit, Operation, Instruction
+from cqlib.circuit import Circuit, Parameter, Qubit, ValueOperation, Instruction
 from cqlib.circuit.gates import *
 from cqlib.qis import Hamiltonian, PauliString
 from cqlib.qis.state import Statevector
@@ -42,7 +42,7 @@ from cqlib_qml.differentiator import AdjointDifferentiator, ParameterShiftDiffer
 # Type Alias Definition
 Qubits = Union[Qubit, int, Sequence[Union[Qubit, int]]]
 IntQubit = Union[Qubit, int]
-AppendInstruction = Union[Instruction, StandardGate, McGate, UnitaryGate]
+AppendInstruction = Union[Instruction, StandardGate, MCGate, UnitaryGate]
 
 
 class Ansatz:
@@ -747,7 +747,7 @@ class Ansatz:
             elif gate_type == "mcgate":
                 base_gate = getattr(StandardGate, gate_info["base_gate"].upper())
                 num_ctrl_qubits = gate_info["num_ctrl_qubits"]
-                instruction = McGate(num_ctrl_qubits, base_gate)
+                instruction = MCGate(num_ctrl_qubits, base_gate)
             else:
                 instruction = UnitaryGate(gate_info["label"], gate_num_qubits).with_matrix(gate_info["matrix"])
             self.append(instruction, gate_qubits, gate_params)
@@ -813,7 +813,7 @@ class Ansatz:
         Append a generic instruction or gate to the circuit.
 
         Args:
-            instruction: Instruction, StandardGate, McGate, UnitaryGate, etc.
+            instruction: Instruction, StandardGate, MCGate, UnitaryGate, etc.
             qubits: List of qubit indices or Qubit objects.
             params: Optional parameters for the instruction.
             label: Optional operation label.
@@ -822,7 +822,7 @@ class Ansatz:
 
     def multi_control_gate(
         self,
-        instruction: McGate,
+        instruction: MCGate,
         qubits: list[int] | list[Qubit],
         params: Optional[list[float | Parameter]] = None,
     ) -> None:
@@ -1012,7 +1012,7 @@ class Ansatz:
         """Number of operations in the circuit."""
         return len(self._circuit)
 
-    def __getitem__(self, idx: int | slice) -> Operation | list[Operation]:
+    def __getitem__(self, idx: int | slice) -> ValueOperation | list[ValueOperation]:
         """Access operations by index."""
         return self._circuit.__getitem__(idx)
 
