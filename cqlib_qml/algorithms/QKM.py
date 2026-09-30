@@ -30,7 +30,7 @@ Examples:
 import numpy as np
 from typing import Optional, Union, List
 
-from cqlib.circuit import Circuit, McGate, StandardGate
+from cqlib.circuit import Circuit, MCGate, StandardGate
 from cqlib.qis.state import Statevector
 from cqlib_qml.encoder import AmplitudeEncoder, AngleEncoder, ZZFeatureEncoder
 
@@ -200,7 +200,7 @@ class QKM:
         swap_circuit.compose(cir_j, list(range(self._n_qubits, 2 * self._n_qubits)))
         swap_circuit.h(ancilla_idx)
         for i in range(self._n_qubits):
-            cswap = McGate(1, StandardGate.SWAP)
+            cswap = MCGate(1, StandardGate.SWAP)
             swap_circuit.multi_control_gate(cswap, [ancilla_idx, i, i + self._n_qubits])
         swap_circuit.h(ancilla_idx)
 

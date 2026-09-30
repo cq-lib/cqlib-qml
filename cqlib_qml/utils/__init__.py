@@ -11,7 +11,7 @@ but may also be useful for advanced users extending the library.
 
 Available Utilities:
     - grad_matrix: Gradient matrix computation for quantum gates
-    - Operation extensions: Monkey-patched methods for gradient calculation
+    - ValueOperation extensions: Monkey-patched methods for gradient calculation
 
 Examples:
     >>> from cqlib_qml.utils import grad_matrix

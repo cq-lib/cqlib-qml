@@ -27,7 +27,7 @@ Examples:
 """
 
 import numpy as np
-from cqlib.circuit import Circuit, McGate
+from cqlib.circuit import Circuit, MCGate
 
 
 class AmplitudeEncoder:
@@ -154,14 +154,14 @@ class AmplitudeEncoder:
                     params = op.params
                     if instruction.is_standard:
                         gate = instruction.standard_gate
-                        cgate = McGate(1, gate)
+                        cgate = MCGate(1, gate)
                         circuit.x(current_q)
                         circuit.multi_control_gate(cgate, [current_q] + [remaining_q[i] for i in sub_qubits], params)
                         circuit.x(current_q)
                     elif instruction.is_mcgate:
                         gate = instruction.mc_gate
                         base_gate = gate.base_gate
-                        cgate = McGate(1 + gate.num_ctrl_qubits, base_gate)
+                        cgate = MCGate(1 + gate.num_ctrl_qubits, base_gate)
                         circuit.x(current_q)
                         circuit.multi_control_gate(cgate, [current_q] + [remaining_q[i] for i in sub_qubits], params)
                         circuit.x(current_q)
@@ -177,10 +177,10 @@ class AmplitudeEncoder:
                     params = op.params
                     if instruction.is_standard:
                         gate = instruction.standard_gate
-                        cgate = McGate(1, gate)
+                        cgate = MCGate(1, gate)
                         circuit.multi_control_gate(cgate, [current_q] + [remaining_q[i] for i in sub_qubits], params)
                     elif instruction.is_mcgate:
                         gate = instruction.mc_gate
                         base_gate = gate.base_gate
-                        cgate = McGate(1 + gate.num_ctrl_qubits, base_gate)
+                        cgate = MCGate(1 + gate.num_ctrl_qubits, base_gate)
                         circuit.multi_control_gate(cgate, [current_q] + [remaining_q[i] for i in sub_qubits], params)

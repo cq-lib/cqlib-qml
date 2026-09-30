@@ -36,7 +36,7 @@ import numpy as np
 from sympy import symbols
 from sympy.logic.boolalg import to_dnf
 
-from cqlib.circuit import Circuit, McGate, StandardGate
+from cqlib.circuit import Circuit, MCGate, StandardGate
 
 from .image_encoder import ImageEncoder
 
@@ -229,7 +229,7 @@ class FRQI(ImageEncoder):
             # Apply color encoding
             if rotate:
                 theta = float(img[i] / np.max(img) * np.pi)
-                cgate = McGate(self._n_pos_qubits, StandardGate.RY)
+                cgate = MCGate(self._n_pos_qubits, StandardGate.RY)
                 circuit.multi_control_gate(cgate, list(range(self._n_qubits)), [theta])
             else:
                 pixel_val = int(img[i] / np.max(img) * 255)
@@ -237,7 +237,7 @@ class FRQI(ImageEncoder):
                 for qid in range(self._n_color_qubits):
                     if bin_color[qid] == "1":
                         mct_qids = list(range(self._n_pos_qubits)) + [self._n_pos_qubits + qid]
-                        cgate = McGate(self._n_pos_qubits, StandardGate.X)
+                        cgate = MCGate(self._n_pos_qubits, StandardGate.X)
                         circuit.multi_control_gate(cgate, mct_qids)
         # Reset position qubits
         for qid in range(self._n_pos_qubits):
@@ -326,10 +326,10 @@ class FRQI(ImageEncoder):
                 self._q_state[qid] = 1 - self._q_state[qid]
 
         if theta is None:
-            cgate = McGate(len(qids), StandardGate.X)
+            cgate = MCGate(len(qids), StandardGate.X)
             cnf_circuit.multi_control_gate(cgate, qids + [gid + self._n_pos_qubits])
         else:
-            cgate = McGate(len(qids), StandardGate.RY)
+            cgate = MCGate(len(qids), StandardGate.RY)
             cnf_circuit.multi_control_gate(cgate, qids + [gid + self._n_pos_qubits], [theta])
         return cnf_circuit
 
