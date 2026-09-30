@@ -708,10 +708,16 @@ class Ansatz:
                 gate_info["type"] = "standard"
                 gate_info["name"] = str(instruction.standard_gate).split(".")[-1]
             elif instruction.is_mcgate:
-                ctrl_part, base_name = instruction.name.split("-", 1)
                 gate_info["type"] = "mcgate"
-                gate_info["base_gate"] = base_name
-                gate_info["num_ctrl_qubits"] = int(ctrl_part[1:])
+                mc_gate = getattr(instruction, "mc_gate", None)
+                if mc_gate is not None:
+                    gate_info["base_gate"] = str(mc_gate.base_gate).split(".")[-1].split("(")[0]
+                    gate_info["num_ctrl_qubits"] = mc_gate.num_ctrl_qubits
+                else:
+                    # Older cqlib bindings only expose the "C<num_ctrl>-<BASE>" name.
+                    ctrl_part, base_name = instruction.name.split("-", 1)
+                    gate_info["base_gate"] = base_name
+                    gate_info["num_ctrl_qubits"] = int(ctrl_part[1:])
             elif instruction.is_unitary:
                 gate_info["type"] = "unitary"
                 gate_info["label"] = instruction.name

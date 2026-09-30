@@ -46,9 +46,14 @@ def _gate_name(gate) -> str:
 def _mc_gate_info(instruction) -> tuple[int, StandardGate]:
     """Recover (num_ctrl_qubits, base_gate) from an mcgate instruction.
 
-    cqlib 2.0 no longer exposes the MCGate object from an instruction;
-    the instruction name encodes it as ``"C<num_ctrl>-<BASE>"``.
+    Prefer the ``mc_gate`` payload getter exposed by newer cqlib bindings.
+    Older releases (2.0.0b2 era) do not expose the MCGate object from an
+    instruction, so fall back to parsing the instruction name encoded as
+    ``"C<num_ctrl>-<BASE>"``.
     """
+    mc_gate = getattr(instruction, "mc_gate", None)
+    if mc_gate is not None:
+        return mc_gate.num_ctrl_qubits, mc_gate.base_gate
     ctrl_part, base_name = instruction.name.split("-", 1)
     return int(ctrl_part[1:]), StandardGate.from_name(base_name)
 

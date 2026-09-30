@@ -31,14 +31,23 @@ from cqlib.circuit import Circuit, MCGate, StandardGate
 
 
 def _controlled(instruction, num_extra_ctrl: int, params) -> MCGate:
-    """Build an MCGate adding ``num_extra_ctrl`` controls to an existing instruction."""
+    """Build an MCGate adding ``num_extra_ctrl`` controls to an existing instruction.
+
+    Prefer the ``mc_gate`` payload getter exposed by newer cqlib bindings;
+    older releases require parsing the ``"C<num_ctrl>-<BASE>"`` name.
+    """
     if instruction.is_standard:
         num_ctrl = 0
         base_gate = instruction.standard_gate
     else:
-        ctrl_part, base_name = instruction.name.split("-", 1)
-        num_ctrl = int(ctrl_part[1:])
-        base_gate = StandardGate.from_name(base_name)
+        mc_gate = getattr(instruction, "mc_gate", None)
+        if mc_gate is not None:
+            num_ctrl = mc_gate.num_ctrl_qubits
+            base_gate = mc_gate.base_gate
+        else:
+            ctrl_part, base_name = instruction.name.split("-", 1)
+            num_ctrl = int(ctrl_part[1:])
+            base_gate = StandardGate.from_name(base_name)
     if params:
         base_gate = base_gate(*params)
     return MCGate(num_extra_ctrl + num_ctrl, base_gate)
