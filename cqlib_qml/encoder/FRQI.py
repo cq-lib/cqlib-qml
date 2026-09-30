@@ -229,8 +229,8 @@ class FRQI(ImageEncoder):
             # Apply color encoding
             if rotate:
                 theta = float(img[i] / np.max(img) * np.pi)
-                cgate = MCGate(self._n_pos_qubits, StandardGate.RY)
-                circuit.multi_control_gate(cgate, list(range(self._n_qubits)), [theta])
+                cgate = MCGate(self._n_pos_qubits, StandardGate.RY(theta))
+                circuit.append_mc_gate(cgate, list(range(self._n_qubits)))
             else:
                 pixel_val = int(img[i] / np.max(img) * 255)
                 bin_color = bin(pixel_val)[2:].zfill(self._n_color_qubits)
@@ -238,7 +238,7 @@ class FRQI(ImageEncoder):
                     if bin_color[qid] == "1":
                         mct_qids = list(range(self._n_pos_qubits)) + [self._n_pos_qubits + qid]
                         cgate = MCGate(self._n_pos_qubits, StandardGate.X)
-                        circuit.multi_control_gate(cgate, mct_qids)
+                        circuit.append_mc_gate(cgate, mct_qids)
         # Reset position qubits
         for qid in range(self._n_pos_qubits):
             if self._q_state[qid] == 1:
@@ -327,10 +327,10 @@ class FRQI(ImageEncoder):
 
         if theta is None:
             cgate = MCGate(len(qids), StandardGate.X)
-            cnf_circuit.multi_control_gate(cgate, qids + [gid + self._n_pos_qubits])
+            cnf_circuit.append_mc_gate(cgate, qids + [gid + self._n_pos_qubits])
         else:
-            cgate = MCGate(len(qids), StandardGate.RY)
-            cnf_circuit.multi_control_gate(cgate, qids + [gid + self._n_pos_qubits], [theta])
+            cgate = MCGate(len(qids), StandardGate.RY(theta))
+            cnf_circuit.append_mc_gate(cgate, qids + [gid + self._n_pos_qubits])
         return cnf_circuit
 
     def _get_uniqueness_dnf(self, pre_cnf_list, current_cnf):

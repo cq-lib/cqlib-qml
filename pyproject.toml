@@ -5,16 +5,15 @@ description = "Quantum machine learning package based on Cqlib"
 authors = [
     { name = "China Telecom Quantum Group Quantum Computing Team", email = "tianyan@chinatelecom.cn" },
 ]
-license = { file = "LICENSE" }
+license = "Apache-2.0"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 classifiers = [
     "Environment :: Console",
     "Operating System :: MacOS",
     "Operating System :: Microsoft :: Windows",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3 :: Only",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",

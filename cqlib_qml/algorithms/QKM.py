@@ -201,7 +201,7 @@ class QKM:
         swap_circuit.h(ancilla_idx)
         for i in range(self._n_qubits):
             cswap = MCGate(1, StandardGate.SWAP)
-            swap_circuit.multi_control_gate(cswap, [ancilla_idx, i, i + self._n_qubits])
+            swap_circuit.append_mc_gate(cswap, [ancilla_idx, i, i + self._n_qubits])
         swap_circuit.h(ancilla_idx)
 
         state = Statevector(total_qubits)

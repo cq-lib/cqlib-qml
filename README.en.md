@@ -6,7 +6,7 @@ Cqlib-QML is a quantum machine learning Python package based on **[Cqlib](https:
 
 ## Installation
 
-Python 3.10 or later is required.
+Python 3.11 or later is required.
 
 Install from source:
 

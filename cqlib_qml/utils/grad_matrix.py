@@ -33,10 +33,24 @@ Examples:
             [0.5*sin(θ/2), -0.5*cos(θ/2)]])]
 """
 
-# from cqlib.circuit import Circuit, MCGate, StandardGate
 import numpy as np
 from scipy.linalg import block_diag
-from cqlib.circuit import ValueOperation
+from cqlib.circuit import ValueOperation, StandardGate
+
+
+def _gate_name(gate) -> str:
+    """Return the plain gate name (e.g. ``"RY"``) from a StandardGate."""
+    return str(gate).split(".")[-1].split("(")[0]
+
+
+def _mc_gate_info(instruction) -> tuple[int, StandardGate]:
+    """Recover (num_ctrl_qubits, base_gate) from an mcgate instruction.
+
+    cqlib 2.0 no longer exposes the MCGate object from an instruction;
+    the instruction name encodes it as ``"C<num_ctrl>-<BASE>"``.
+    """
+    ctrl_part, base_name = instruction.name.split("-", 1)
+    return int(ctrl_part[1:]), StandardGate.from_name(base_name)
 
 
 def _standard_gate_grad(self, gate):
@@ -75,30 +89,31 @@ def _standard_gate_grad(self, gate):
         - XY2M: Negative square root of XY
 
     Examples:
-        >>> from cqlib.circuit import StandardGate
-        >>> op = ValueOperation(StandardGate.RY, qubits=[0], params=[0.5])
+        >>> from cqlib.circuit import StandardGate, Qubit
+        >>> op = ValueOperation.from_standard_gate(StandardGate.RY(0.5), qubits=[Qubit(0)])
         >>> grad = _standard_gate_grad(op, StandardGate.RY)
         >>> print(grad[0].shape)
         (2, 2)
     """
     if self.num_params == 0:
         return None
-    if str(gate) == "RX":
+    name = _gate_name(gate)
+    if name == "RX":
         cos_v = -np.cos(self.params[0] / 2) / 2
         sin_v = -np.sin(self.params[0] / 2) / 2
         return [np.array([[sin_v, 1j * cos_v], [1j * cos_v, sin_v]], dtype=np.complex128)]
-    elif str(gate) == "RY":
+    elif name == "RY":
         cos = np.cos(self.params[0] / 2) / 2
         sin = np.sin(self.params[0] / 2) / 2
         return [np.array([[-sin, -cos], [cos, -sin]], dtype=np.complex128)]
-    elif str(gate) == "RZ":
+    elif name == "RZ":
         return [
             np.array(
                 [[-1j * np.exp(-self.params[0] / 2 * 1j) / 2, 0], [0, 1j * np.exp(self.params[0] / 2 * 1j) / 2]],
                 dtype=np.complex128,
             )
         ]
-    elif str(gate) == "RXX":
+    elif name == "RXX":
         cos = np.cos(self.params[0] / 2) / 2
         sin = np.sin(self.params[0] / 2) / 2
         return [
@@ -112,7 +127,7 @@ def _standard_gate_grad(self, gate):
                 dtype=np.complex128,
             )
         ]
-    elif str(gate) == "RXY":
+    elif name == "RXY":
         phi = self.params[0]
         theta = self.params[1]
         cos = np.cos(theta / 2)
@@ -123,7 +138,7 @@ def _standard_gate_grad(self, gate):
             dtype=np.complex128,
         )
         return [grad1, grad2]
-    elif str(gate) == "RZX":
+    elif name == "RZX":
         cos = np.cos(self.params[0] / 2) / 2
         sin = np.sin(self.params[0] / 2) / 2
         return [
@@ -132,21 +147,21 @@ def _standard_gate_grad(self, gate):
                 dtype=np.complex128,
             )
         ]
-    elif str(gate) == "RZZ":
+    elif name == "RZZ":
         exp = 0.5j * np.exp(0.5j * self.params[0])
         sexp = -0.5j * np.exp(-0.5j * self.params[0])
         return [np.array([[sexp, 0, 0, 0], [0, exp, 0, 0], [0, 0, exp, 0], [0, 0, 0, sexp]], dtype=np.complex128)]
-    elif str(gate) == "CRX":
+    elif name == "CRX":
         cos = -np.cos(self.params[0] / 2) / 2
         sin = -np.sin(self.params[0] / 2) / 2
         return [
             np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, sin, 1j * cos], [0, 0, 1j * cos, sin]], dtype=np.complex128)
         ]
-    elif str(gate) == "CRY":
+    elif name == "CRY":
         cos = np.cos(self.params[0] / 2) / 2
         sin = np.sin(self.params[0] / 2) / 2
         return [np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, -sin, -cos], [0, 0, cos, -sin]], dtype=np.complex128)]
-    elif str(gate) == "CRZ":
+    elif name == "CRZ":
         return [
             np.array(
                 [
@@ -158,7 +173,7 @@ def _standard_gate_grad(self, gate):
                 dtype=np.complex128,
             )
         ]
-    elif str(gate) == "U":
+    elif name == "U":
         theta, phi, lam = (float(param) for param in self.params)
         sin = np.sin(theta / 2)
         cos = np.cos(theta / 2)
@@ -184,9 +199,9 @@ def _standard_gate_grad(self, gate):
             dtype=np.complex128,
         )
         return [grad1, grad2, grad3]
-    elif str(gate) == "XY":
+    elif name == "XY":
         return [np.array([[0, -np.exp(-1j * self.params[0])], [np.exp(1j * self.params[0]), 0]], dtype=np.complex128)]
-    elif str(gate) == "XY2P":
+    elif name == "XY2P":
         return [
             1
             / np.sqrt(2)
@@ -198,7 +213,7 @@ def _standard_gate_grad(self, gate):
                 dtype=np.complex128,
             )
         ]
-    elif str(gate) == "XY2M":
+    elif name == "XY2M":
         return [
             1
             / np.sqrt(2)
@@ -235,31 +250,34 @@ def grad_matrix(self):
 
     Examples:
         >>> # For a standard gate
-        >>> op = ValueOperation(StandardGate.RY, qubits=[0], params=[0.5])
+        >>> from cqlib.circuit import Qubit
+        >>> op = ValueOperation.from_standard_gate(StandardGate.RY(0.5), qubits=[Qubit(0)])
         >>> grad = op.grad_matrix()
         >>>
         >>> # For a multi-controlled gate
         >>> from cqlib.circuit import MCGate, StandardGate
-        >>> cgate = MCGate(2, StandardGate.RY)
-        >>> op = ValueOperation(cgate, qubits=[0, 1, 2], params=[0.5])
+        >>> cgate = MCGate(2, StandardGate.RY(0.5))
+        >>> op = ValueOperation.from_mc_gate(cgate, qubits=[Qubit(0), Qubit(1), Qubit(2)])
         >>> grad = op.grad_matrix()
         >>>
         >>> # For a gate without parameters
-        >>> op = ValueOperation(StandardGate.H, qubits=[0])
+        >>> op = ValueOperation.from_standard_gate(StandardGate.H, qubits=[Qubit(0)])
         >>> grad = op.grad_matrix()  # Returns None
     """
-    if self.instruction.mc_gate is not None:
+    instruction = self.instruction
+    if instruction.is_mcgate:
+        num_ctrl_qubits, base_gate = _mc_gate_info(instruction)
         grads = []
-        gate = self.instruction.mc_gate
-        base_gate_grad = self._standard_gate_grad(gate.base_gate)
+        base_gate_grad = self._standard_gate_grad(base_gate)
+        num_qubits = self.num_qubits
         for grad in base_gate_grad:
             grads.append(
-                block_diag(np.eye((1 << gate.num_qubits) - (1 << (gate.num_qubits - gate.num_ctrl_qubits))), grad)
+                block_diag(np.eye((1 << num_qubits) - (1 << (num_qubits - num_ctrl_qubits))), grad)
             )
         return grads
 
-    if self.instruction.standard_gate is not None:
-        gate = self.instruction.standard_gate
+    if instruction.standard_gate is not None:
+        gate = instruction.standard_gate
         return self._standard_gate_grad(gate)
 
     return None

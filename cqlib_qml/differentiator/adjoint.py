@@ -423,7 +423,7 @@ class AdjointDifferentiator:
         if op.instruction.standard_gate:
             inv_gate = op.instruction.standard_gate
             vector.apply_standard_gate(inv_gate, qubits, op.params)
-        elif op.instruction.mc_gate or op.instruction.unitary_gate:
+        elif op.is_mcgate or op.is_unitary:
             vector.apply_unitary_gate(qubits, op.matrix())
         else:
             raise ValueError(f"Unsupported operation type: {op.instruction.instruction_type}")

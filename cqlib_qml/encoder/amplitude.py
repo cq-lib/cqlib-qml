@@ -27,7 +27,21 @@ Examples:
 """
 
 import numpy as np
-from cqlib.circuit import Circuit, MCGate
+from cqlib.circuit import Circuit, MCGate, StandardGate
+
+
+def _controlled(instruction, num_extra_ctrl: int, params) -> MCGate:
+    """Build an MCGate adding ``num_extra_ctrl`` controls to an existing instruction."""
+    if instruction.is_standard:
+        num_ctrl = 0
+        base_gate = instruction.standard_gate
+    else:
+        ctrl_part, base_name = instruction.name.split("-", 1)
+        num_ctrl = int(ctrl_part[1:])
+        base_gate = StandardGate.from_name(base_name)
+    if params:
+        base_gate = base_gate(*params)
+    return MCGate(num_extra_ctrl + num_ctrl, base_gate)
 
 
 class AmplitudeEncoder:
@@ -152,18 +166,10 @@ class AmplitudeEncoder:
                     instruction = op.instruction
                     sub_qubits = [qid.index for qid in op.qubits]
                     params = op.params
-                    if instruction.is_standard:
-                        gate = instruction.standard_gate
-                        cgate = MCGate(1, gate)
+                    if instruction.is_standard or instruction.is_mcgate:
+                        cgate = _controlled(instruction, 1, params)
                         circuit.x(current_q)
-                        circuit.multi_control_gate(cgate, [current_q] + [remaining_q[i] for i in sub_qubits], params)
-                        circuit.x(current_q)
-                    elif instruction.is_mcgate:
-                        gate = instruction.mc_gate
-                        base_gate = gate.base_gate
-                        cgate = MCGate(1 + gate.num_ctrl_qubits, base_gate)
-                        circuit.x(current_q)
-                        circuit.multi_control_gate(cgate, [current_q] + [remaining_q[i] for i in sub_qubits], params)
+                        circuit.append_mc_gate(cgate, [current_q] + [remaining_q[i] for i in sub_qubits])
                         circuit.x(current_q)
 
         if right_norm > 1e-10 and half > 0:
@@ -175,12 +181,6 @@ class AmplitudeEncoder:
                     instruction = op.instruction
                     sub_qubits = [qid.index for qid in op.qubits]
                     params = op.params
-                    if instruction.is_standard:
-                        gate = instruction.standard_gate
-                        cgate = MCGate(1, gate)
-                        circuit.multi_control_gate(cgate, [current_q] + [remaining_q[i] for i in sub_qubits], params)
-                    elif instruction.is_mcgate:
-                        gate = instruction.mc_gate
-                        base_gate = gate.base_gate
-                        cgate = MCGate(1 + gate.num_ctrl_qubits, base_gate)
-                        circuit.multi_control_gate(cgate, [current_q] + [remaining_q[i] for i in sub_qubits], params)
+                    if instruction.is_standard or instruction.is_mcgate:
+                        cgate = _controlled(instruction, 1, params)
+                        circuit.append_mc_gate(cgate, [current_q] + [remaining_q[i] for i in sub_qubits])

@@ -1,5 +1,5 @@
 autograd>=1.8.0
-cqlib>=1.3.9
+cqlib>=2.0.0b2
 numpy>=2.4.6
 PyYAML>=6.0.3
 scikit-learn>=1.7.0

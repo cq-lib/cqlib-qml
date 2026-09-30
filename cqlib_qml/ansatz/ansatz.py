@@ -300,7 +300,7 @@ class Ansatz:
                 for enc_cir in self._encoder:
                     enc_cir_gate = enc_cir.to_gate("enc_cir")
                     enc_cir_copy = Circuit(enc_cir.num_qubits)
-                    enc_cir_copy.append(enc_cir_gate, list(range(enc_cir.num_qubits)))
+                    enc_cir_copy.append_circuit_gate(enc_cir_gate, list(range(enc_cir.num_qubits)))
                     enc_cir_copy.compose(self._assigned_cir)
                     circuits.append(enc_cir_copy)
             else:
@@ -323,7 +323,7 @@ class Ansatz:
                     assigned_cir = self._circuit.assign_parameters(bindings)
                     enc_cir_gate = enc_cir.to_gate("enc_cir")
                     enc_cir_copy = Circuit(enc_cir.num_qubits)
-                    enc_cir_copy.append(enc_cir_gate, list(range(enc_cir.num_qubits)))
+                    enc_cir_copy.append_circuit_gate(enc_cir_gate, list(range(enc_cir.num_qubits)))
                     enc_cir_copy.compose(assigned_cir)
                     circuits.append(enc_cir_copy)
                     bindings_list.append(bindings)
@@ -698,26 +698,24 @@ class Ansatz:
             gate_info["num_qubits"] = op.num_qubits
             params = []
             for param in op.params:
-                if isinstance(param, tuple):
-                    param_name = str(self.parameters[param[1]])
-                    params.append(param_name)
+                if isinstance(param, Parameter):
+                    params.append(str(param))
                 else:
                     params.append(param)
             gate_info["params"] = params
 
             if instruction.is_standard:
                 gate_info["type"] = "standard"
-                gate_info["name"] = str(instruction.standard_gate)
+                gate_info["name"] = str(instruction.standard_gate).split(".")[-1]
             elif instruction.is_mcgate:
-                mc_gate = instruction.mc_gate
+                ctrl_part, base_name = instruction.name.split("-", 1)
                 gate_info["type"] = "mcgate"
-                gate_info["base_gate"] = str(mc_gate.base_gate)
-                gate_info["num_ctrl_qubits"] = mc_gate.num_ctrl_qubits
+                gate_info["base_gate"] = base_name
+                gate_info["num_ctrl_qubits"] = int(ctrl_part[1:])
             elif instruction.is_unitary:
-                unitary_gate = instruction.unitary_gate
                 gate_info["type"] = "unitary"
-                gate_info["label"] = unitary_gate.label
-                gate_info["matrix"] = unitary_gate.matrix
+                gate_info["label"] = instruction.name
+                gate_info["matrix"] = op.matrix()
             else:
                 pass
             gates.append(gate_info)
@@ -818,7 +816,24 @@ class Ansatz:
             params: Optional parameters for the instruction.
             label: Optional operation label.
         """
-        self._circuit.append(instruction, qubits, params, label)
+        qubit_objs = [self._circuit.qubits[q] if isinstance(q, int) else q for q in qubits]
+        if isinstance(instruction, MCGate):
+            gate = instruction
+            if params:
+                gate = MCGate(gate.num_ctrl_qubits, gate.base_gate(*params))
+            operation = ValueOperation.from_mc_gate(gate, qubit_objs, label)
+        elif isinstance(instruction, StandardGate):
+            gate = instruction(*params) if params else instruction
+            operation = ValueOperation.from_standard_gate(gate, qubit_objs, label)
+        elif isinstance(instruction, UnitaryGate):
+            operation = ValueOperation.from_instruction(
+                Instruction.from_unitary_gate(instruction), qubit_objs, params, label
+            )
+        elif isinstance(instruction, Instruction):
+            operation = ValueOperation.from_instruction(instruction, qubit_objs, params, label)
+        else:
+            raise TypeError(f"Unsupported instruction type: {type(instruction).__name__}")
+        self._circuit.append(operation)
 
     def multi_control_gate(
         self,
@@ -827,7 +842,7 @@ class Ansatz:
         params: Optional[list[float | Parameter]] = None,
     ) -> None:
         """Append a multi-controlled gate to the circuit."""
-        self._circuit.multi_control_gate(instruction, qubits, params)
+        self.append(instruction, qubits, params)
 
     # Standard single-qubit gates
     def i(self, qubit: int | Qubit) -> None:
