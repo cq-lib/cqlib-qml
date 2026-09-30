@@ -74,7 +74,7 @@ ansatz.set_measurement(readouts=[0])
 model = QNN(ansatz=ansatz)
 ```
 
-更多说明参见 [`docs/tutorials`](docs/tutorials) 和 [`docs/api`](docs/api)。
+更多说明参见 [`docs/tutorials`](docs/tutorials)。
 
 ## 测试
 
