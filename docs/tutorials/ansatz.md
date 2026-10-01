@@ -505,7 +505,7 @@ print(f"参数数量: {ansatz.in_dim}")  # 2 × (5-2) × 2 = 12
 
 ### 2. 梯度计算方法选择
 
-| 不同iator | 适用场景 | 复杂度 | 特点 |
+| 微分器 | 适用场景 | 复杂度 | 特点 |
 |-----------|----------|--------|------|
 | 伴随法 | 仿真 | $O(p)$ | 速度快，需要状态向量 |
 | 参数偏移法 | 硬件 | $O(2p)$ | 稳健，可硬件执行 |
@@ -541,7 +541,7 @@ ansatz.assign_parameters(bindings)
 **解决方案**：
 
 ```python
-# 1. 使用参数偏移不同iator
+# 1. 使用参数偏移微分器
 ansatz.set_differentiator("parameter_shift")
 
 # 2. 减少线路深度
@@ -600,15 +600,15 @@ print(len(ansatz))  # 应大于 0
 |------|----------|------|
 | `forward(X=None, quantum_state=None)` | np.ndarray | 前向传播，返回测量期望值 |
 | `backward(dLdexp=None)` | dict 或 np.ndarray | 反向传播，返回参数梯度 |
-| `set_measurement(readouts=None, hams=None)` | None | 设置测量方式 |
+| `set_measurement(**kwargs)` | None | 设置测量方式；只传 `readouts` 或 `hams` 其中一个 |
 | `set_optimizer(optimizer)` | None | 设置参数优化器 |
-| `set_differentiator(diff_type, shift=None)` | None | 设置梯度计算器 |
+| `set_differentiator(differentiator="adjoint", shift=np.pi/2)` | None | 设置梯度计算器 |
 | `update(cur_loss=None)` | None | 更新参数 |
 | `zero_grad()` | None | 将梯度置零 |
 | `freeze()` | None | 冻结参数（禁用训练） |
 | `unfreeze()` | None | 解冻参数（启用训练） |
 | `assign_parameters(bindings)` | None | 为参数赋值 |
-| `add_encoder(circuits)` | None | 添加编码电路 |
+| `add_encoder(other)` | None | 添加编码电路 |
 | `summary` | dict | 线路摘要信息 |
 | `in_dim` | int | 参数数量 |
 | `out_dim` | int | 测量数量 |

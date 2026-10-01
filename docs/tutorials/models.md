@@ -361,7 +361,7 @@ HQNN 结合了量子计算的高维特征表示能力和经典计算的线性变
     # 不能使用其他 ansatz
     # ansatz = BasicQNN(n_qubits=4, layers=["XX"])  # 报错
 
-### 问题 2: 前向传播报错 "Ansatz must have measurements"
+### 问题 2: 构造 Module 时报错 "Ansatz must have measurements"
 
 **原因**：ansatz 未设置测量。
 
