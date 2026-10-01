@@ -11,7 +11,7 @@
 #   PYTHON         Python interpreter used for the clean venv (default: python3).
 #   PIP_EXTRA_ARGS Extra args passed to pip when installing the wheel, e.g.
 #                  PIP_EXTRA_ARGS="--index-url https://test.pypi.org/simple"
-#                  Useful while cqlib>=2.0.0b2 is only on TestPyPI or a private index.
+#                  Useful while cqlib>=2.0.0b3 is only on TestPyPI or a private index.
 #
 # Usage:  bash scripts/release_check.sh
 set -euo pipefail
