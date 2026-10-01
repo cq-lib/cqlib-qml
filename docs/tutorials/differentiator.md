@@ -198,7 +198,7 @@ $$\frac{\partial f}{\partial \theta} = \frac{f(\theta + s) - f(\theta - s)}{2\si
 
 $$\frac{\partial f}{\partial \theta} = \frac{f(\theta + \pi/2) - f(\theta - \pi/2)}{2}$$
 
-参数偏移法需要两次电路评估来计算一个参数的梯度，总复杂度为 $O(2p)$。
+当前实现逐个参数化门的参数位置计算贡献，再按链式法则累加到符号梯度。简单门分支每个位置需要两次线路评估，通用 Fourier 分支需要八次；同一符号出现在多个门中时，各位置分别计算。因此，若分解后的线路包含 $m_2$ 个简单分支位置和 $m_8$ 个通用分支位置，每个样本需要 $2m_2 + 8m_8$ 次梯度线路评估，而不能仅按独立符号数量估算。这里不包含硬件测量分组、shots 或前向计算成本。
 
 ### 使用示例
 
@@ -583,7 +583,7 @@ bindings = {"theta": 0.3}  # 避开 0, π 等特殊点
 
 | 方法 | 描述 |
 |------|------|
-| `run(circuit, bindings, readouts=None, hamiltonians=None)` | 计算参数梯度 |
+| `run(circuit, bindings, readouts=None, hamiltonians=None, initial_state=None)` | 计算参数梯度 |
 
 **参数说明**：
 
