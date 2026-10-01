@@ -21,6 +21,17 @@ class TestConstantScheduler:
         assert scheduler.learning_rate(step=100) == 0.01
         assert scheduler.learning_rate(step=1000) == 0.01
 
+    def test_set_params_changes_lr(self):
+        scheduler = ConstantScheduler(lr=0.01)
+        scheduler.set_params({"lr": 0.5})
+        assert scheduler.learning_rate(step=0) == 0.5
+        assert scheduler.learning_rate(step=1000) == 0.5
+
+    def test_set_params_unknown_key_ignored(self):
+        scheduler = ConstantScheduler(lr=0.01)
+        scheduler.set_params({"unknown": 1.0})
+        assert scheduler.learning_rate(step=0) == 0.01
+
 
 class TestExponentialScheduler:
     def test_init(self):
@@ -44,6 +55,16 @@ class TestExponentialScheduler:
     def test_str(self):
         scheduler = ExponentialScheduler(initial_lr=0.01, stage_length=100, decay=0.5)
         assert "ExponentialScheduler" in str(scheduler)
+
+    def test_set_params_changes_initial_lr(self):
+        scheduler = ExponentialScheduler(initial_lr=0.01, stage_length=10, decay=0.5)
+        scheduler.set_params({"initial_lr": 2.0})
+        assert scheduler.learning_rate(step=0) == 2.0
+
+    def test_set_params_changes_decay(self):
+        scheduler = ExponentialScheduler(initial_lr=1.0, stage_length=10, decay=0.1)
+        scheduler.set_params({"decay": 0.5})
+        assert scheduler.learning_rate(step=10) == 0.5
 
 
 class TestNoamScheduler:
@@ -94,6 +115,13 @@ class TestNoamScheduler:
         assert "model_dim=512" in str(scheduler)
         assert "warmup_steps=4000" in str(scheduler)
 
+    def test_set_params_changes_warmup_steps(self):
+        scheduler = NoamScheduler(model_dim=512, scale_factor=1, warmup_steps=4000)
+        scheduler.set_params({"warmup_steps": 100})
+        lr_peak = scheduler.learning_rate(step=100)
+        expected = (512 ** (-0.5)) * (100 ** (-0.5))
+        assert abs(lr_peak - expected) < 1e-10
+
 
 class TestKingScheduler:
     def test_init(self):
@@ -117,6 +145,12 @@ class TestKingScheduler:
     def test_str(self):
         scheduler = KingScheduler(initial_lr=0.01, patience=100, decay=0.99)
         assert "KingScheduler" in str(scheduler)
+
+    def test_set_params_changes_initial_lr(self):
+        scheduler = KingScheduler(initial_lr=0.01, patience=100, decay=0.99)
+        scheduler.set_params({"initial_lr": 0.5})
+        lr = scheduler.learning_rate(step=0, cur_loss=1.0)
+        assert lr == 0.5
 
 
 class TestSchedulerInitializer:
@@ -152,6 +186,26 @@ class TestSchedulerInitializer:
         scheduler = init()
         assert isinstance(scheduler, ConstantScheduler)
         assert scheduler.lr == 0.01
+
+    def test_from_dict_applies_nondefault_lr(self):
+        init = SchedulerInitializer({"hyperparameters": {"id": "ConstantScheduler", "lr": 0.05}})
+        scheduler = init()
+        assert scheduler.learning_rate(step=0) == pytest.approx(0.05)
+
+    def test_from_dict_exponential_applies_params(self):
+        init = SchedulerInitializer({"hyperparameters": {
+            "id": "ExponentialScheduler", "initial_lr": 1.0,
+            "stage_length": 10, "staircase": False, "decay": 0.5,
+        }})
+        scheduler = init()
+        assert scheduler.learning_rate(step=10) == pytest.approx(0.5)
+
+    def test_from_dict_king_applies_initial_lr(self):
+        init = SchedulerInitializer({"hyperparameters": {
+            "id": "KingScheduler", "initial_lr": 0.5, "patience": 100, "decay": 0.99,
+        }})
+        scheduler = init()
+        assert scheduler.learning_rate(step=0, cur_loss=1.0) == pytest.approx(0.5)
 
     def test_from_scheduler(self):
         constant = ConstantScheduler(lr=0.01)

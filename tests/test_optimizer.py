@@ -131,3 +131,60 @@ class TestOptimizerInitializer:
         opt = init()
         assert isinstance(opt, SGD)
         assert opt.hyperparameters["lr"] == 0.01
+
+
+class TestOptimizerSetParams:
+    def test_set_params_changes_lr(self):
+        opt = SGD(lr=0.01)
+        opt.set_params({"lr": 0.5})
+        new_param = opt.update(np.array([1.0]), np.array([1.0]), "weight")
+        np.testing.assert_array_almost_equal(new_param, np.array([0.5]))
+
+    def test_set_params_changes_lr_mid_training(self):
+        opt = Adam(lr=0.001)
+        param = np.array([1.0])
+        grad = np.array([1.0])
+        opt.update(param, grad, "weight")
+        opt.set_params({"lr": 0.1})
+        new_param = opt.update(param, grad, "weight")
+        # For constant gradients Adam's bias-corrected moments are exactly 1,
+        # so the second step size equals the learning rate.
+        np.testing.assert_array_almost_equal(new_param, param - 0.1, decimal=6)
+
+    def test_set_params_updates_lr_attribute(self):
+        opt = SGD(lr=0.01)
+        opt.set_params({"lr": 0.5})
+        assert opt.lr == 0.5
+        assert opt.hyperparameters["lr"] == 0.5
+
+    def test_set_params_unknown_key_ignored(self):
+        opt = SGD(lr=0.01)
+        opt.set_params({"unknown": 1.0})
+        new_param = opt.update(np.array([1.0]), np.array([1.0]), "weight")
+        np.testing.assert_array_almost_equal(new_param, np.array([0.99]))
+
+    def test_set_params_momentum_still_applies(self):
+        opt = SGD(lr=0.1, momentum=0.0)
+        param = np.array([1.0])
+        grad = np.array([1.0])
+        opt.update(param, grad, "weight")
+        opt.set_params({"momentum": 0.5})
+        new_param = opt.update(param, grad, "weight")
+        np.testing.assert_array_almost_equal(new_param, param - 0.1 * grad - 0.5 * 0.1 * grad)
+
+    def test_init_from_dict_applies_lr(self):
+        init = OptimizerInitializer({
+            "hyperparameters": {"id": "SGD", "lr": 0.5, "momentum": 0.0, "clip_norm": None},
+            "cache": {},
+        })
+        opt = init()
+        new_param = opt.update(np.array([1.0]), np.array([1.0]), "weight")
+        np.testing.assert_array_almost_equal(new_param, np.array([0.5]))
+
+    def test_init_from_dict_roundtrip_lr(self):
+        opt = Adam(lr=0.05)
+        init = OptimizerInitializer({"hyperparameters": dict(opt.hyperparameters), "cache": {}})
+        restored = init()
+        new_param = restored.update(np.array([1.0]), np.array([1.0]), "weight")
+        expected = np.array([1.0 - 0.05 / (1 + 1e-7)])
+        np.testing.assert_array_almost_equal(new_param, expected, decimal=6)

@@ -1,4 +1,4 @@
-# cqlib_qml/scheduler/scheduler.py
+# cqlib_qml/scheduler.py
 """
 Learning rate scheduling strategies for optimization.
 
@@ -89,6 +89,9 @@ class SchedulerBase(ABC):
         """
         Set scheduler hyperparameters from a dictionary.
 
+        Matching instance attributes are updated as well, so the new values
+        take effect in `learning_rate` immediately.
+
         Args:
             hparam_dict (dict): Hyperparameters dictionary.
 
@@ -99,7 +102,17 @@ class SchedulerBase(ABC):
             for k, v in hparam_dict.items():
                 if k in self.hyperparameters:
                     self.hyperparameters[k] = v
+                    if hasattr(self, k):
+                        setattr(self, k, v)
         return self
+
+    def state_dict(self):
+        """Serialize hyperparameters and any adaptive learning-rate history."""
+        state = {"hyperparameters": deepcopy(self.hyperparameters)}
+        if hasattr(self, "current_lr"):
+            state["current_lr"] = self.current_lr
+            state["loss_history"] = deepcopy(self.loss_history)
+        return state
 
     @abstractmethod
     def learning_rate(self, step: int = None, **kwargs) -> float:
@@ -248,6 +261,9 @@ class SchedulerInitializer:
                 f"Supported: ['ConstantScheduler', 'ExponentialScheduler', "
                 f"'NoamScheduler', 'KingScheduler']"
             )
+        if "current_lr" in S:
+            scheduler.current_lr = S["current_lr"]
+            scheduler.loss_history = deepcopy(S.get("loss_history", []))
         return scheduler
 
 
@@ -442,11 +458,13 @@ class KingScheduler(SchedulerBase):
     def __init__(self, initial_lr=0.01, patience=1000, decay=0.99, **kwargs):
         """Initialize a KingScheduler instance."""
         super().__init__()
+        if not isinstance(patience, (int, np.integer)) or patience < 1:
+            raise ValueError("patience must be a positive integer")
         self.decay = decay
         self.patience = patience
         self.initial_lr = initial_lr
         self.current_lr = initial_lr
-        self.max_history = np.ceil(1.1 * (patience + 1)).astype(int)
+        self.max_history = max(4, int(np.ceil(1.1 * (patience + 1))))
 
         self.loss_history = []
         self.hyperparameters = {
@@ -458,6 +476,31 @@ class KingScheduler(SchedulerBase):
 
     def __str__(self):
         return "KingScheduler(initial_lr={}, patience={}, decay={})".format(self.initial_lr, self.patience, self.decay)
+
+    def set_params(self, hparam_dict: dict):
+        """
+        Set KingScheduler hyperparameters from a dictionary.
+
+        The derived state (current learning rate and loss-history window) is
+        refreshed as well, so the new values take effect immediately.
+
+        Args:
+            hparam_dict (dict): Hyperparameters dictionary.
+
+        Returns:
+            KingScheduler: The scheduler instance.
+        """
+        if hparam_dict is not None and "patience" in hparam_dict:
+            patience = hparam_dict["patience"]
+            if not isinstance(patience, (int, np.integer)) or patience < 1:
+                raise ValueError("patience must be a positive integer")
+        super().set_params(hparam_dict)
+        if hparam_dict is not None:
+            if "initial_lr" in hparam_dict:
+                self.current_lr = self.initial_lr
+            if "patience" in hparam_dict:
+                self.max_history = max(4, int(np.ceil(1.1 * (self.patience + 1))))
+        return self
 
     def _steps_without_decrease(self, robust=False, check_all=False) -> int:
         """
@@ -485,7 +528,7 @@ class KingScheduler(SchedulerBase):
                 if self._p_decreasing(lh, i) < 0.51:
                     steps_without_decrease = N - i
         else:
-            i = max(0, N - self.patience - 1)
+            i = min(max(0, N - self.patience - 1), max(0, N - 3))
             if self._p_decreasing(lh, i) < 0.51:
                 steps_without_decrease = N - i
         return steps_without_decrease
@@ -520,6 +563,10 @@ class KingScheduler(SchedulerBase):
         loss = loss_history[i:]
         N = len(loss)
 
+        if N < 3:
+            # Too few observations to estimate residual variance reliably.
+            return 0.5
+
         # Perform OLS to compute slope mean
         X = np.c_[np.ones(N), np.arange(i, len(loss_history))]
         intercept, s_mean = np.linalg.inv(X.T @ X) @ X.T @ loss
@@ -552,7 +599,7 @@ class KingScheduler(SchedulerBase):
 
         # Initialize history tracking
         if not hasattr(self, "max_history"):
-            self.max_history = np.ceil(1.1 * (self.patience + 1)).astype(int)
+            self.max_history = max(4, int(np.ceil(1.1 * (self.patience + 1))))
         patience, max_history = self.patience, self.max_history
 
         self.loss_history.append(cur_loss)

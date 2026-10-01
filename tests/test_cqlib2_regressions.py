@@ -144,3 +144,36 @@ def test_softmax_loss_gradient_consistency(logits, target):
         numeric = (loss(plus, target) - loss(minus, target)) / 2e-4
         assert gradient[index] == pytest.approx(numeric, abs=2e-8)
     assert loss(logits + 1e4, target) == pytest.approx(value)
+
+
+def test_adaptive_scheduler_and_optimizer_state_roundtrip():
+    scheduler = KingScheduler(initial_lr=0.1)
+    scheduler.current_lr = 0.025
+    scheduler.loss_history = [2., 1., 1.]
+    optimizer = Adam(lr=0.1, lr_scheduler=scheduler)
+    optimizer.step()
+    optimizer(np.array([0.4]), np.array([0.7]), "theta", 1.0)
+    saved = optimizer.state_dict()
+    loaded = OptimizerInitializer(saved)()
+    assert loaded.cur_step == optimizer.cur_step
+    assert loaded.lr_scheduler.current_lr == scheduler.current_lr
+    assert loaded.lr_scheduler.loss_history == scheduler.loss_history
+    loaded.lr_scheduler.loss_history.append(99)
+    assert loaded.lr_scheduler.loss_history != scheduler.loss_history
+    reconstructed = SchedulerInitializer(scheduler.state_dict())()
+    assert reconstructed.current_lr == scheduler.current_lr
+    assert reconstructed.loss_history == scheduler.loss_history
+
+
+def test_legacy_optimizer_cache_keys_migrate():
+    saved = Adam().state_dict()
+    saved["cache"] = {"12345_params0_0": {"mean": np.array([0.4])}}
+    loaded = OptimizerInitializer(saved)()
+    assert list(loaded.cache) == ["params0_0"]
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_optimizer_dictionary_lr_order_independent(reverse):
+    items = [("lr", 0.5), ("lr_scheduler", "ConstantScheduler(lr=0.01)")]
+    optimizer = SGD().set_params(dict(reversed(items) if reverse else items))
+    assert optimizer(np.array([1.]), np.array([1.]), "weight") == pytest.approx([0.5])

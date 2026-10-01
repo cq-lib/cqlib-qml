@@ -1,4 +1,4 @@
-# cqlib_qml/optimizer/optimizer.py
+# cqlib_qml/optimizer.py
 """
 Optimization algorithms for training quantum models.
 
@@ -42,7 +42,7 @@ from copy import deepcopy
 import numpy as np
 from numpy.linalg import norm
 
-from .scheduler import SchedulerInitializer
+from .scheduler import ConstantScheduler, SchedulerInitializer
 
 
 class OptimizerBase(ABC):
@@ -83,6 +83,8 @@ class OptimizerBase(ABC):
         self.hyperparameters = {}
         self.lr = lr
         self.lr_scheduler = SchedulerInitializer(scheduler, lr=lr)()
+        self._lr_step = None
+        self._step_lr = None
 
     def __call__(
         self, param: np.ndarray, param_grad: np.ndarray, param_name: str, cur_loss: float = None
@@ -107,10 +109,12 @@ class OptimizerBase(ABC):
     def step(self):
         """Increment the optimizer step counter by 1."""
         self.cur_step += 1
+        self._lr_step = None
 
     def reset_step(self):
         """Reset the step counter to zero."""
         self.cur_step = 0
+        self._lr_step = None
 
     def copy(self):
         """
@@ -130,15 +134,21 @@ class OptimizerBase(ABC):
         """
         self.lr_scheduler = SchedulerInitializer(scheduler, lr=self.lr)()
         self.hyperparameters["lr_scheduler"] = str(self.lr_scheduler)
+        self._lr_step = None
 
     def remove_scheduler(self):
         """Remove the learning rate scheduler (use constant LR)."""
         self.lr_scheduler = SchedulerInitializer(None, lr=self.lr)()
         self.hyperparameters["lr_scheduler"] = str(self.lr_scheduler)
+        self._lr_step = None
 
     def set_params(self, hparam_dict: dict = None, cache_dict: dict = None):
         """
         Set optimizer parameters from dictionaries.
+
+        Setting ``lr`` also updates the learning rate actually used by
+        `update` (the `lr` attribute and, for a constant learning rate, the
+        scheduler), so the new value takes effect immediately.
 
         Args:
             hparam_dict (dict, optional): Hyperparameters dictionary.
@@ -151,13 +161,39 @@ class OptimizerBase(ABC):
             for k, v in hparam_dict.items():
                 if k in self.hyperparameters:
                     self.hyperparameters[k] = v
-                    if k == "lr_scheduler":
-                        self.lr_scheduler = SchedulerInitializer(v, lr=None)()
-
+            if "lr_scheduler" in hparam_dict:
+                self.lr_scheduler = SchedulerInitializer(hparam_dict["lr_scheduler"], lr=self.lr)()
+            if "lr" in hparam_dict:
+                self.lr = hparam_dict["lr"]
+                if isinstance(self.lr_scheduler, ConstantScheduler):
+                    self.lr_scheduler.set_params({"lr": self.lr})
+            self.hyperparameters["lr_scheduler"] = str(self.lr_scheduler)
         if cache_dict is not None:
+            self.cache = {}
             for k, v in cache_dict.items():
-                self.cache[k] = v
+                # Pre-2.0 QML checkpoints used an object's transient id prefix.
+                prefix, separator, name = k.partition("_")
+                key = name if separator and prefix.isdigit() else k
+                self.cache[key] = deepcopy(v)
+        self._lr_step = None
         return self
+
+    def _learning_rate(self, cur_loss):
+        if self._lr_step != self.cur_step:
+            self._step_lr = self.lr_scheduler(self.cur_step, cur_loss)
+            self._lr_step = self.cur_step
+        return self._step_lr
+
+    def state_dict(self):
+        """Return independent hyperparameters and training state for checkpoints."""
+        return deepcopy({
+            "hyperparameters": self.hyperparameters,
+            "cache": self.cache,
+            "cur_step": self.cur_step,
+            "scheduler": self.lr_scheduler.state_dict(),
+            "lr_step": self._lr_step,
+            "step_lr": self._step_lr,
+        })
 
     @abstractmethod
     def update(self, param: np.ndarray, param_grad: np.ndarray, param_name: str, cur_loss: float = None) -> np.ndarray:
@@ -301,6 +337,11 @@ class OptimizerInitializer:
             optimizer = Adam().set_params(op, cc)
         elif op:
             raise ValueError(f"Unsupported optimizer: {op['id']}. " f"Supported: ['SGD', 'RMSProp', 'AdaGrad', 'Adam']")
+        optimizer.cur_step = O.get("cur_step", 0)
+        optimizer._lr_step = O.get("lr_step")
+        optimizer._step_lr = O.get("step_lr")
+        if "scheduler" in O:
+            optimizer.lr_scheduler = SchedulerInitializer(O["scheduler"])()
         return optimizer
 
 
@@ -364,7 +405,7 @@ class SGD(OptimizerBase):
         C = self.cache
         H = self.hyperparameters
         momentum, clip_norm = H["momentum"], H["clip_norm"]
-        lr = self.lr_scheduler(self.cur_step, cur_loss)
+        lr = self._learning_rate(cur_loss)
 
         if param_name not in C:
             C[param_name] = np.zeros_like(param_grad)
@@ -438,7 +479,7 @@ class AdaGrad(OptimizerBase):
         C = self.cache
         H = self.hyperparameters
         eps, clip_norm = H["eps"], H["clip_norm"]
-        lr = self.lr_scheduler(self.cur_step, cur_loss)
+        lr = self._learning_rate(cur_loss)
 
         if param_name not in C:
             C[param_name] = np.zeros_like(param_grad)
@@ -515,7 +556,7 @@ class RMSProp(OptimizerBase):
         C = self.cache
         H = self.hyperparameters
         eps, decay, clip_norm = H["eps"], H["decay"], H["clip_norm"]
-        lr = self.lr_scheduler(self.cur_step, cur_loss)
+        lr = self._learning_rate(cur_loss)
 
         if param_name not in C:
             C[param_name] = np.zeros_like(param_grad)
@@ -615,7 +656,7 @@ class Adam(OptimizerBase):
         H = self.hyperparameters
         d1, d2 = H["decay1"], H["decay2"]
         eps, clip_norm = H["eps"], H["clip_norm"]
-        lr = self.lr_scheduler(self.cur_step, cur_loss)
+        lr = self._learning_rate(cur_loss)
 
         if param_name not in C:
             C[param_name] = {

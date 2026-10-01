@@ -60,6 +60,43 @@ def test_softplus_extreme_values_and_derivatives():
     np.testing.assert_allclose(grad2[[0, 2, 4]], [0, .25, 0])
 
 
+@pytest.mark.parametrize('patience', [1, 2, 3])
+@pytest.mark.parametrize('optimizer_cls', [SGD, Adam, AdaGrad, RMSProp])
+def test_adaptive_scheduler_advances_once_per_optimizer_step(patience, optimizer_cls):
+    opt = optimizer_cls(lr_scheduler=KingScheduler(initial_lr=.1, patience=patience, decay=.5))
+    for step in range(6):
+        history = len(opt.lr_scheduler.loss_history)
+        opt.step()
+        values = [opt.update(np.zeros(1), np.ones(1), str(i), cur_loss=1.) for i in range(8)]
+        for value in values:
+            np.testing.assert_allclose(value, values[0])
+        assert len(opt.lr_scheduler.loss_history) == min(history + 1, opt.lr_scheduler.max_history)
+        assert np.isfinite(opt.lr_scheduler.current_lr)
+    restored = OptimizerInitializer(opt.state_dict())()
+    for instance in [opt, restored]:
+        instance.step()
+    np.testing.assert_allclose(opt.update(np.zeros(1), np.ones(1), '0', cur_loss=1.),
+                               restored.update(np.zeros(1), np.ones(1), '0', cur_loss=1.))
+    assert restored.lr_scheduler.loss_history == opt.lr_scheduler.loss_history
+
+
+@pytest.mark.parametrize('patience', [0, -1, 1.5])
+def test_king_invalid_patience(patience):
+    with pytest.raises(ValueError):
+        KingScheduler(patience=patience)
+    with pytest.raises(ValueError):
+        KingScheduler().set_params({'patience': patience})
+
+
+@pytest.mark.parametrize('cls', [ConstantScheduler, NoamScheduler, ExponentialScheduler, KingScheduler])
+def test_documented_scheduler_restore_preserves_next_step(cls):
+    scheduler = cls()
+    for step in range(5):
+        scheduler(step, cur_loss=1.)
+    restored = SchedulerInitializer(scheduler.state_dict())()
+    assert restored(5, cur_loss=1.) == pytest.approx(scheduler(5, cur_loss=1.))
+
+
 @pytest.mark.parametrize('pixel', [0, 1])
 def test_qubit_lattice_uniform_binary_state(pixel):
     circuit = QubitLattice(4)(np.full((2, 2), pixel))
@@ -106,6 +143,25 @@ def test_grayscale_does_not_mutate_input():
 def test_tutorial_softmax_loss_value():
     loss = SoftmaxCrossEntropy()
     assert loss(np.array([[2., 1., .1]]), np.array([[1., 0., 0.]])) == pytest.approx(.4170300163)
+
+
+def test_optimizer_mid_step_restore_does_not_repeat_scheduler_observation():
+    opt = SGD(lr_scheduler=KingScheduler(patience=2))
+    opt.step()
+    opt.update(np.zeros(1), np.ones(1), 'first', cur_loss=1)
+    restored = OptimizerInitializer(opt.state_dict())()
+    expected = opt.update(np.zeros(1), np.ones(1), 'second', cur_loss=1)
+    actual = restored.update(np.zeros(1), np.ones(1), 'second', cur_loss=1)
+    np.testing.assert_array_equal(actual, expected)
+    assert restored.lr_scheduler.loss_history == [1]
+
+
+@pytest.mark.parametrize('patience', [1, 2])
+def test_king_short_patience_eventually_decays_on_constant_loss(patience):
+    scheduler = KingScheduler(initial_lr=.1, patience=patience, decay=.5)
+    for step in range(10):
+        scheduler(step, cur_loss=1)
+    assert 0 < scheduler.current_lr < .1
 
 
 def test_tutorial_neqr_example_encodes_integer_color_indices():

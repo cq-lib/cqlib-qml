@@ -4,9 +4,7 @@
 
 ## 模块结构
 
-    optimizer/
-    ├── __init__.py              # 模块导出
-    └── optimizer.py             # 优化器实现
+    cqlib_qml/optimizer.py
 
 ---
 
@@ -494,17 +492,13 @@ $$\theta_{t+1} = \theta_t - \eta \frac{\hat{m}_t}{\sqrt{\hat{v}_t} + \epsilon}$$
     # 保存优化器状态
     import pickle
     with open("optimizer_state.pkl", "wb") as f:
-        pickle.dump({
-            "cache": opt.cache,
-            "cur_step": opt.cur_step,
-            "hyperparameters": opt.hyperparameters
-        }, f)
+        pickle.dump(opt.state_dict(), f)
 
     # 恢复优化器状态
     with open("optimizer_state.pkl", "rb") as f:
         state = pickle.load(f)
-        opt.cache = state["cache"]
-        opt.cur_step = state["cur_step"]
+    from cqlib_qml.optimizer import OptimizerInitializer
+    opt = OptimizerInitializer(state)()
 
 ---
 
@@ -514,8 +508,8 @@ $$\theta_{t+1} = \theta_t - \eta \frac{\hat{m}_t}{\sqrt{\hat{v}_t} + \epsilon}$$
 
 | 方法 | 描述 |
 |------|------|
-| `__call__(param, grad, name, cur_loss=None)` | 更新参数 |
-| `update(param, grad, name, cur_loss=None)` | 更新参数 |
+| `__call__(param, param_grad, param_name, cur_loss=None)` | 更新参数 |
+| `update(param, param_grad, param_name, cur_loss=None)` | 更新参数 |
 | `step()` | 步进计数器 |
 | `reset_step()` | 重置计数器 |
 | `set_scheduler(scheduler)` | 设置学习率调度器 |
