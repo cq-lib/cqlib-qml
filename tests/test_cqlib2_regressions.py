@@ -124,3 +124,23 @@ def test_neqr_basis_encodes_actual_levels():
 def test_neqr_rejects_unrepresentable_pixels(pixel):
     with pytest.raises(ValueError):
         NEQR(4, grayscale=4)(np.full((2, 2), pixel))
+
+
+@pytest.mark.parametrize("logits,target", [
+    ([[1000., -1000.]], [[0., 1.]]),
+    ([[-1000., -1001.]], [[0.25, 0.75]]),
+    ([[0.2, 0.8]], [[0.4, 0.6]]),
+])
+def test_softmax_loss_gradient_consistency(logits, target):
+    logits, target = np.array(logits), np.array(target)
+    loss = SoftmaxCrossEntropy()
+    value = loss(logits, target)
+    gradient = loss.grads().copy()
+    assert np.isfinite(value)
+    for index in np.ndindex(logits.shape):
+        plus, minus = logits.copy(), logits.copy()
+        plus[index] += 1e-4
+        minus[index] -= 1e-4
+        numeric = (loss(plus, target) - loss(minus, target)) / 2e-4
+        assert gradient[index] == pytest.approx(numeric, abs=2e-8)
+    assert loss(logits + 1e4, target) == pytest.approx(value)

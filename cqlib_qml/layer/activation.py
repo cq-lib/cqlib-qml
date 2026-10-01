@@ -406,7 +406,7 @@ class SoftPlus(ActivationBase):
         Returns:
             np.ndarray: SoftPlus output.
         """
-        return np.log(np.exp(x) + 1)
+        return np.logaddexp(0, x)
 
     def grad(self, x: np.ndarray) -> np.ndarray:
         """
@@ -420,8 +420,7 @@ class SoftPlus(ActivationBase):
         Returns:
             np.ndarray: Gradient of the SoftPlus function.
         """
-        exp_x = np.exp(x)
-        return exp_x / (exp_x + 1)
+        return np.exp(-np.logaddexp(0, -np.asarray(x)))
 
     def grad2(self, x: np.ndarray) -> np.ndarray:
         """
@@ -435,5 +434,5 @@ class SoftPlus(ActivationBase):
         Returns:
             np.ndarray: Second derivative of the SoftPlus function.
         """
-        exp_x = np.exp(x)
-        return exp_x / ((exp_x + 1) ** 2)
+        sigmoid = self.grad(x)
+        return sigmoid * (1 - sigmoid)

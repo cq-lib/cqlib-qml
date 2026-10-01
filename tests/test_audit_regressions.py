@@ -24,6 +24,42 @@ from cqlib_qml.scheduler import KingScheduler, SchedulerInitializer, ConstantSch
 from cqlib_qml.data.data_preprocess import downscale, remove_conflict, change_grayscale
 
 
+@pytest.mark.parametrize('loss_cls', [CrossEntropy, SoftmaxCrossEntropy])
+@pytest.mark.parametrize('reduction', ['sum', 'mean'])
+def test_cross_entropy_reduction_and_numeric_gradient(loss_cls, reduction):
+    pred = np.array([[.2, .8], [.6, .4]])
+    target = np.array([[1., 0.], [0., 1.]])
+    loss = loss_cls(reduction=reduction)
+    value = loss(pred, target)
+    gradient = loss.grads().copy()
+    duplicated = loss_cls(reduction=reduction)(np.tile(pred, (2, 1)), np.tile(target, (2, 1)))
+    assert duplicated == pytest.approx(value * (2 if reduction == 'sum' else 1))
+    for index in np.ndindex(pred.shape):
+        plus, minus = pred.copy(), pred.copy()
+        plus[index] += 1e-6
+        minus[index] -= 1e-6
+        numerical = (loss(plus, target) - loss(minus, target)) / 2e-6
+        assert gradient[index] == pytest.approx(numerical, abs=1e-8)
+
+
+def test_cross_entropy_large_batch_is_not_clipped():
+    loss = CrossEntropy()
+    value = loss(np.full((200, 2), .5), np.tile([1., 0.], (200, 1)))
+    assert value == pytest.approx(200 * np.log(2))
+    np.testing.assert_allclose(loss.grads()[:, 0], -2)
+
+
+def test_softplus_extreme_values_and_derivatives():
+    activation = SoftPlus()
+    x = np.array([-1000., -1., 0., 1., 1000.])
+    with np.errstate(over='raise', invalid='raise'):
+        output, grad, grad2 = activation.act(x), activation.grad(x), activation.grad2(x)
+    assert np.isfinite(output).all() and np.isfinite(grad).all() and np.isfinite(grad2).all()
+    np.testing.assert_allclose(output[[0, 2, 4]], [0, np.log(2), 1000])
+    np.testing.assert_allclose(grad[[0, 2, 4]], [0, .5, 1])
+    np.testing.assert_allclose(grad2[[0, 2, 4]], [0, .25, 0])
+
+
 @pytest.mark.parametrize('pixel', [0, 1])
 def test_qubit_lattice_uniform_binary_state(pixel):
     circuit = QubitLattice(4)(np.full((2, 2), pixel))
@@ -65,6 +101,11 @@ def test_grayscale_does_not_mutate_input():
     np.testing.assert_array_equal(original, [.26, .51, .76])
     np.testing.assert_allclose(result, [1 / 3, 2 / 3, 1])
     assert not np.shares_memory(original, result)
+
+
+def test_tutorial_softmax_loss_value():
+    loss = SoftmaxCrossEntropy()
+    assert loss(np.array([[2., 1., .1]]), np.array([[1., 0., 0.]])) == pytest.approx(.4170300163)
 
 
 def test_tutorial_neqr_example_encodes_integer_color_indices():
