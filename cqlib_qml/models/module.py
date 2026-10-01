@@ -143,11 +143,11 @@ class Module:
             >>> grad = model.backward(dLdout)
         """
         for net in self._nets[::-1]:
-            if net.trainable:
-                if not isinstance(net, Ansatz):
-                    if dLdout is None:
-                        raise ValueError("Classical layers must pass in gradients.")
-                dLdout = net.backward(dLdout)
+            if isinstance(net, Ansatz) and not net.trainable and net.updatable:
+                continue  # Frozen quantum source has no classical input gradient.
+            if not isinstance(net, Ansatz) and dLdout is None:
+                raise ValueError("Classical layers must pass in gradients.")
+            dLdout = net.backward(dLdout)
         return dLdout
 
     def random_init(self) -> None:

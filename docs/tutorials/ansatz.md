@@ -260,6 +260,7 @@ for epoch in range(100):
     
     # 更新参数
     ansatz.update()
+    ansatz.zero_grad()
     
     if epoch % 10 == 0:
         print(f"Epoch {epoch}: loss = {loss[0][0]:.4f}")

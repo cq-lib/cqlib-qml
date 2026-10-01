@@ -100,6 +100,19 @@ def test_fixed_controlled_gate_in_adjoint():
     np.testing.assert_allclose(result["t"], [-np.sin(0.3)])
 
 
+def test_expression_parameter_updates():
+    ansatz = Ansatz(1)
+    ansatz.ry(0, 2 * Parameter("t"))
+    ansatz.set_measurement(readouts=[0])
+    ansatz.assign_parameters({"t": 0.3})
+    ansatz.set_optimizer(SGD(lr=0.1))
+    ansatz.forward()
+    ansatz.backward(np.ones((1, 1)))
+    ansatz.update()
+    assert ansatz._bindings["t"] == pytest.approx(0.3 + 0.2 * np.sin(0.6))
+    assert ansatz._assigned_cir.symbols == []
+
+
 @pytest.mark.parametrize("cls,levels", [(FRQI, 2), (NEQR, 4)])
 def test_qic_state_equivalence_exhaustive(cls, levels):
     # Includes empty/full groups, overlap of Boolean clauses, and zero images.
@@ -146,6 +159,14 @@ def test_softmax_loss_gradient_consistency(logits, target):
     assert loss(logits + 1e4, target) == pytest.approx(value)
 
 
+def train_step(model, data):
+    model.zero_grad()
+    output = model.forward(data)
+    model.backward(2 * output)
+    model.update(cur_loss=float(np.sum(output**2)))
+    model.zero_grad()
+
+
 def test_adaptive_scheduler_and_optimizer_state_roundtrip():
     scheduler = KingScheduler(initial_lr=0.1)
     scheduler.current_lr = 0.025
@@ -177,3 +198,28 @@ def test_optimizer_dictionary_lr_order_independent(reverse):
     items = [("lr", 0.5), ("lr_scheduler", "ConstantScheduler(lr=0.01)")]
     optimizer = SGD().set_params(dict(reversed(items) if reverse else items))
     assert optimizer(np.array([1.]), np.array([1.]), "weight") == pytest.approx([0.5])
+
+
+def test_legacy_ansatz_gate_wrappers():
+    ansatz = Ansatz(2)
+    theta = Parameter("theta")
+    assert ansatz.add_parameter(theta) == (0, True)
+    assert ansatz.add_parameter(theta) == (0, False)
+    ansatz.multi_control(StandardGate.RY, [0], [1], [theta])
+    ansatz.unitary(UnitaryGate("X", 1).with_matrix(np.array([[0, 1], [1, 0]])), [0])
+    reference = Circuit(2)
+    reference.append_mc_gate(MCGate(1, StandardGate.RY(theta)), [0, 1])
+    reference.x(0)
+    np.testing.assert_allclose(ansatz._circuit.assign_parameters({"theta": 0.3}).to_matrix(),
+                               reference.assign_parameters({"theta": 0.3}).to_matrix())
+
+
+def test_qnn_parameters_learn_over_multiple_epochs():
+    model = QNN(HEAnsatz(2, 1, ["RY", "CX"]), [0], np.array([0.2, 0.4]), "sgd(lr=0.1)")
+    circuit = Circuit(2)
+    initial = model.forward(circuit, False)[0, 0] ** 2
+    for _ in range(50):
+        train_step(model, circuit)
+    final = model.forward(circuit, False)[0, 0] ** 2
+    assert final < initial * 1e-5
+    assert abs(model._ansatz._bindings["params0_0"] - 0.2) > 0.1

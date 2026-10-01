@@ -204,18 +204,24 @@ class Linear(Layer):
         y = self._act_fn(z) if self._act_fn else z
 
         if retain_derived:
-            self._X = X
-            self._derived_variables["z"] = z
+            self._X = X.copy()
+            self._derived_variables["z"] = z.copy()
+            self._derived_variables["W"] = W.copy()
 
+        else:
+            self._X = []
+            self._derived_variables["z"] = None
+            self._derived_variables["W"] = None
         return y
 
-    def _bwd(self, dLdy: np.ndarray, x: np.ndarray) -> tuple:
+    def _bwd(self, dLdy: np.ndarray, x: np.ndarray, z: np.ndarray) -> tuple:
         """
         Compute gradients for a single sample.
 
         Args:
             dLdy (np.ndarray): Gradients from the next layer. Shape: (1, out_dim) or (out_dim,).
             x (np.ndarray): Input for this sample. Shape: (1, in_dim) or (in_dim,).
+            z (np.ndarray): Cached preactivation from the corresponding forward pass.
 
         Returns:
             tuple: (dLdx, dLdw, dLdb) where:
@@ -223,15 +229,12 @@ class Linear(Layer):
                 - dLdw: Gradients for the weights (out_dim, in_dim)
                 - dLdb: Gradients for the bias (1, out_dim)
         """
-        W = self._parameters["W"]  # (out_dim, in_dim)
+        W = self._derived_variables["W"]  # weights from the forward pass
 
         if x.ndim == 1:
             x = x.reshape(1, -1)
         if dLdy.ndim == 1:
             dLdy = dLdy.reshape(1, -1)
-
-        b = self._parameters["b"] if self._bias else 0
-        z = np.dot(x, W.T) + b
 
         dydz = self._act_fn.grad(z) if self._act_fn else 1
         dLdz = dLdy * dydz
@@ -259,7 +262,7 @@ class Linear(Layer):
                 Shape: (batch_size, in_dim) or (in_dim,) for single sample.
 
         Raises:
-            ValueError: If layer is frozen or dimensions mismatch.
+            ValueError: If forward state is unavailable or dimensions mismatch.
 
         Examples:
             >>> dLdy = np.random.randn(32, 5)
@@ -269,8 +272,7 @@ class Linear(Layer):
             >>> dLdy = np.random.randn(5)
             >>> dX = layer.backward(dLdy)  # Shape: (10,)
         """
-        if not self._trainable:
-            raise ValueError("Layer is frozen.")
+        retain_grad = retain_grad and self._trainable
         if isinstance(dLdy, numbers.Number):
             dLdy = np.array([dLdy])
         if not isinstance(dLdy, np.ndarray):
@@ -279,17 +281,20 @@ class Linear(Layer):
             dLdy = dLdy.reshape(1, -1)
         if dLdy.shape[1] != self._out_dim:
             raise ValueError(f"Gradient dimension {dLdy.shape[1]} does not match output dimension {self._out_dim}.")
+        if not isinstance(self._X, np.ndarray) or self._derived_variables.get("z") is None:
+            raise ValueError("Run forward before backward (including after zero_grad).")
         if self._X.shape[0] != dLdy.shape[0]:
             raise ValueError(f"Batch size mismatch: input batch {self._X.shape[0]} vs gradient batch {dLdy.shape[0]}.")
 
         dX = []
         X = self._X
-        for dy, x in zip(dLdy, X):
+        for index, (dy, x) in enumerate(zip(dLdy, X)):
             if x.ndim == 1:
                 x = x.reshape(1, -1)
             if dy.ndim == 1:
                 dy = dy.reshape(1, -1)
-            dx, dw, db = self._bwd(dy, x)
+            z = self._derived_variables["z"][index:index + 1]
+            dx, dw, db = self._bwd(dy, x, z)
             if dx.shape[0] == 1:
                 dX.append(dx.flatten())
             else:

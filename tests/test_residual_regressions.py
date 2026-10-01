@@ -53,3 +53,13 @@ def test_adjoint_accepts_barrier_and_final_state_list():
     grads = AdjointDifferentiator().run(circuit, {'theta': .3},
                                       state_vector=state.data.tolist(), readouts=[0, 0])
     np.testing.assert_allclose(grads['theta'], [-np.sin(.3)] * 2, atol=1e-10)
+
+
+def test_legacy_parameter_registration_does_not_create_unused_parameters():
+    ansatz = Ansatz(1)
+    theta = Parameter('theta')
+    assert ansatz.add_parameter(theta) == (0, True)
+    assert ansatz.add_parameter(theta) == (0, False)
+    assert len(ansatz.parameters) == 0
+    ansatz.ry(0, theta)
+    assert list(map(str, ansatz.parameters)) == ['theta']

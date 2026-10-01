@@ -71,7 +71,7 @@ $$f(x; \boldsymbol{\theta}) = \langle 0 | U_{\text{enc}}(x)^\dagger U_{\text{ans
 
     # 3. 经典 + 量子
     model = Module(
-        Linear(in_dim=10, out_dim=4),
+        Linear(in_dim=10, out_dim=ansatz.in_dim),
         ansatz
     )
 

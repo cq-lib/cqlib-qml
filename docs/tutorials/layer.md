@@ -68,10 +68,11 @@
         def forward(self, x, **kwargs):
             if not self._init:
                 self.init_params()
+            self._X = x
             return x @ self._parameters["W"]
 
         def backward(self, out, **kwargs):
-            self._gradients["W"] = out.T @ self._X
+            self._gradients["W"] = self._X.T @ out
             return out @ self._parameters["W"].T
 
 ---

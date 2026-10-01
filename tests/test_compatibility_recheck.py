@@ -29,6 +29,39 @@ def circuit_state(circuit):
     return sv.data
 
 
+@pytest.mark.parametrize('method', ['adjoint', 'parameter_shift'])
+@pytest.mark.parametrize('input_batch', [False, True])
+@pytest.mark.parametrize('with_encoder', [False, True])
+@pytest.mark.parametrize('with_state', [False, True])
+def test_model_gradients_include_encoder_initial_state_and_batch(method, input_batch, with_encoder, with_state):
+    ansatz = ry_ansatz()
+    ansatz.set_differentiator(method)
+    values = np.array([0.3, -0.4]) if input_batch else np.array([0.3, 0.3])
+    encoder_angles = np.array([0.7, -0.2]) if with_encoder else np.zeros(2)
+    initial_angles = np.array([0.2, 0.8]) if with_state else np.zeros(2)
+    if with_encoder:
+        encoders = []
+        for angle in encoder_angles:
+            encoder = Circuit(1)
+            encoder.ry(0, angle)
+            encoders.append(encoder)
+        ansatz.add_encoder(encoders)
+    quantum_state = np.array([np.array([np.cos(a / 2), np.sin(a / 2)]) for a in initial_angles])
+    # A single circuit broadcasts over two initial states; encoders and X can
+    # also supply the batch. Use a single state when no source creates a batch.
+    count = 2 if input_batch or with_encoder or with_state else 1
+    actual = ansatz.forward(values[:, None] if input_batch else None,
+                            quantum_state if with_state else None)
+    totals = (values + encoder_angles + initial_angles)[:count]
+    np.testing.assert_allclose(actual[:, 0], np.cos(totals), atol=1e-12)
+    np.testing.assert_allclose(np.asarray(ansatz.backward()['t']).reshape(-1), -np.sin(totals), atol=1e-10)
+    result = ansatz.backward(np.ones((count, 1)))
+    if input_batch:
+        np.testing.assert_allclose(np.asarray(result).reshape(-1), -np.sin(totals), atol=1e-10)
+    else:
+        assert result['t'] == pytest.approx(-np.sin(totals).sum())
+
+
 def test_parameter_shift_public_initial_state():
     ansatz = ry_ansatz()
     initial = np.array([np.cos(0.35), np.sin(0.35)])
@@ -73,6 +106,76 @@ def test_amplitude_batch_preserves_relative_phases():
 def test_amplitude_rejects_invalid_data(data):
     with pytest.raises(ValueError):
         AmplitudeEncoder()(data)
+
+
+def test_parameter_object_bindings_copy_and_update():
+    ansatz = ry_ansatz()
+    bindings = {Parameter('t'): 0.4}
+    ansatz.assign_parameters(bindings)
+    bindings[Parameter('t')] = 2.0
+    ansatz.set_optimizer(SGD(lr=0.1))
+    np.testing.assert_allclose(ansatz.forward(), [[np.cos(0.4)]])
+    ansatz.backward(np.ones((1, 1)))
+    ansatz.update()
+    assert ansatz._bindings == {'t': pytest.approx(0.4 + 0.1 * np.sin(0.4))}
+
+
+@pytest.mark.parametrize('mutation', ['ry', 'append', 'multi_control', 'unitary', 'add_qubits'])
+def test_mutation_invalidates_bound_circuit_without_losing_bindings(mutation):
+    ansatz = ry_ansatz()
+    ansatz.forward()
+    if mutation == 'ry':
+        ansatz.ry(0, 0.7)
+    elif mutation == 'append':
+        ansatz.append(StandardGate.RY, [0], [0.7])
+    elif mutation == 'unitary':
+        rotation = Circuit(1)
+        rotation.ry(0, 0.7)
+        ansatz.unitary(UnitaryGate('rotation', 1).with_matrix(rotation.to_matrix()), [0])
+    elif mutation == 'multi_control':
+        ansatz.add_qubits([1])
+        ansatz.x(1)
+        ansatz.multi_control(StandardGate.RY, [1], [0], [0.7])
+    else:
+        ansatz.add_qubits([1])
+        ansatz.x(1)
+    expected = np.cos(0.3 if mutation == 'add_qubits' else 1.0)
+    np.testing.assert_allclose(ansatz.forward(), [[expected]], atol=1e-12)
+    assert ansatz._bindings == {'t': 0.3}
+    assert ansatz._assigned_cir.num_qubits == ansatz.num_qubits
+
+
+def test_new_symbol_keeps_existing_value_after_mutation():
+    ansatz = ry_ansatz()
+    ansatz.ry(0, Parameter('new'))
+    ansatz.forward()
+    assert ansatz._bindings['t'] == 0.3
+    assert set(ansatz._bindings) == {'t', 'new'}
+
+
+def test_forward_replaces_stale_gradients_and_restores_update_mode():
+    ansatz = ry_ansatz()
+    ansatz.forward(np.array([[0.2], [0.6]]))
+    assert not ansatz.updatable
+    ansatz.forward()
+    assert ansatz.updatable
+    np.testing.assert_allclose(ansatz.backward()['t'], [-np.sin(0.3)])
+    ansatz.zero_grad()
+    with pytest.raises(ValueError, match='run forward'):
+        ansatz.backward(np.ones((1, 1)))
+
+
+def test_measurement_modes_replace_each_other():
+    ansatz = ry_ansatz()
+    ham = Hamiltonian.from_pauli(PauliString.from_str('X'))
+    ansatz.set_measurement(hams=ham)
+    assert ansatz.readouts is None
+    np.testing.assert_allclose(ansatz.forward(), [[np.sin(0.3)]])
+    np.testing.assert_allclose(ansatz.backward()['t'], [np.cos(0.3)])
+    ansatz.set_measurement(readouts=[0])
+    assert ansatz.hams is None
+    np.testing.assert_allclose(ansatz.forward(), [[np.cos(0.3)]])
+    np.testing.assert_allclose(ansatz.backward()['t'], [-np.sin(0.3)])
 
 
 def test_single_feature_circular_encoder_matches_linear():

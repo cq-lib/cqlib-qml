@@ -24,6 +24,64 @@ from cqlib_qml.scheduler import KingScheduler, SchedulerInitializer, ConstantSch
 from cqlib_qml.data.data_preprocess import downscale, remove_conflict, change_grayscale
 
 
+def ansatz():
+    a = Ansatz(1)
+    a.ry(0, Parameter('t'))
+    a.set_measurement(readouts=[0])
+    a.assign_parameters({'t': 0.3})
+    return a
+
+
+def linear(in_dim=1, out_dim=1, weight=1., act_fn=None):
+    layer = Linear(in_dim, out_dim, bias=False, act_fn=act_fn)
+    layer.init_params()
+    layer.parameters['W'][:] = weight
+    return layer
+
+
+@pytest.mark.parametrize('frozen', [False, True])
+@pytest.mark.parametrize('method', ['adjoint', 'parameter_shift'])
+def test_single_parameter_quantum_input_gradient_batch(frozen, method):
+    first = linear(2, 1, weight=0.2)
+    a = ansatz()
+    a.set_differentiator(method)
+    if frozen:
+        a.freeze()
+    model = Module(first, a)
+    X = np.array([[1., 2.], [2., -1.], [3., 1.]])
+    model.forward(X)
+    dx = model.backward(np.ones((3, 1)))
+    expected = -np.sin(X @ first.parameters['W'].T)
+    np.testing.assert_allclose(dx, expected @ first.parameters['W'], atol=1e-10)
+    np.testing.assert_allclose(first.gradients['W'], expected.T @ X, atol=1e-10)
+
+
+def test_frozen_classical_middle_layer_propagates_gradient_without_training():
+    first, middle, last = linear(2, 3), linear(3, 2, 2), linear(2, 1, 3)
+    middle.freeze()
+    model = Module(first, middle, last)
+    X = np.array([[1., 2.], [2., 3.]])
+    model.forward(X)
+    dx = model.backward(np.ones((2, 1)))
+    upstream = np.ones((2, 1)) @ last.parameters['W'] @ middle.parameters['W']
+    np.testing.assert_allclose(first.gradients['W'], upstream.T @ X)
+    np.testing.assert_allclose(dx, upstream @ first.parameters['W'])
+    np.testing.assert_array_equal(middle.gradients['W'], 0)
+
+
+def test_linear_backward_uses_forward_weights_and_activation():
+    layer = linear(act_fn='sigmoid')
+    layer.forward(np.ones((2, 1)))
+    layer.parameters['W'][:] = 2
+    dx = layer.backward(np.ones((2, 1)))
+    derivative = np.exp(-1) / (1 + np.exp(-1)) ** 2
+    np.testing.assert_allclose(dx, derivative)
+    np.testing.assert_allclose(layer.gradients['W'], 2 * derivative)
+    layer.zero_grad()
+    with pytest.raises(ValueError, match='forward'):
+        layer.backward(np.ones((2, 1)))
+
+
 @pytest.mark.parametrize('loss_cls', [CrossEntropy, SoftmaxCrossEntropy])
 @pytest.mark.parametrize('reduction', ['sum', 'mean'])
 def test_cross_entropy_reduction_and_numeric_gradient(loss_cls, reduction):
@@ -140,6 +198,28 @@ def test_grayscale_does_not_mutate_input():
     assert not np.shares_memory(original, result)
 
 
+def test_tutorial_custom_layer_and_model_composition():
+    root = Path(__file__).resolve().parents[1]
+    text = (root / 'docs/tutorials/layer.md').read_text()
+    code = text.split('### 使用示例', 1)[1].split('\n---', 1)[0]
+    from textwrap import dedent
+    namespace = {}
+    exec(dedent(code), namespace)
+    layer = namespace['MyLayer'](2, 3)
+    X = np.array([[1., 2.], [3., 4.]])
+    layer.forward(X)
+    layer.backward(np.ones((2, 3)))
+    np.testing.assert_array_equal(layer.gradients['W'], X.T @ np.ones((2, 3)))
+    text = (root / 'docs/tutorials/models.md').read_text()
+    code = text.split('### 使用示例', 1)[1].split('### 核心方法', 1)[0]
+    namespace = {}
+    exec(dedent(code), namespace)
+    # Recreate example 3 using its actual documented dimensions.
+    a = namespace['ansatz']
+    model = Module(Linear(10, a.in_dim), a)
+    assert model.forward(np.ones((2, 10))).shape == (2, a.out_dim)
+
+
 def test_tutorial_softmax_loss_value():
     loss = SoftmaxCrossEntropy()
     assert loss(np.array([[2., 1., .1]]), np.array([[1., 0., 0.]])) == pytest.approx(.4170300163)
@@ -162,6 +242,31 @@ def test_king_short_patience_eventually_decays_on_constant_loss(patience):
     for step in range(10):
         scheduler(step, cur_loss=1)
     assert 0 < scheduler.current_lr < .1
+
+
+def test_linear_retained_input_is_a_snapshot():
+    layer = linear()
+    X = np.array([[1.], [2.]])
+    layer.forward(X)
+    X[:] = 100
+    layer.backward(np.ones((2, 1)))
+    np.testing.assert_array_equal(layer.gradients['W'], [[3.]])
+    layer.forward(X, retain_derived=False)
+    with pytest.raises(ValueError, match='forward'):
+        layer.backward(np.ones((2, 1)))
+
+
+def test_tutorial_ansatz_training_loop_runs(capsys):
+    root = Path(__file__).resolve().parents[1]
+    text = (root / 'docs/tutorials/ansatz.md').read_text()
+    codes = re.findall(r'```python\n(.*?)```', text, flags=re.S)
+    namespace = {}
+    declaration = next(code for code in codes if 'class RotationAnsatz' in code)
+    training = next(code for code in codes if 'for epoch in range(100)' in code)
+    exec(declaration, namespace)
+    exec(training, namespace)
+    assert len(re.findall(r'Epoch \d+: loss', capsys.readouterr().out)) == 10
+    assert namespace['ansatz']._gradients == {}
 
 
 def test_tutorial_neqr_example_encodes_integer_color_indices():

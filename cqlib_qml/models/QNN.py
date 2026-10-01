@@ -103,7 +103,7 @@ class QNN(Module):
         if params is not None:
             bindings = dict(zip(ansatz.symbols, params))
             self._ansatz.assign_parameters(bindings)
-        readouts = self._ansatz.readouts if self._ansatz.readouts is not None else readouts
+        readouts = readouts if readouts is not None else self._ansatz.readouts
         if readouts is None:
             raise ValueError("Must provide readouts.")
         self._ansatz.set_measurement(readouts=readouts)

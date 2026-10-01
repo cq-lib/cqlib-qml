@@ -63,6 +63,9 @@ class HQNN(Module):
         ansatz (HEAnsatz): The quantum circuit ansatz. Must be an
             HEAnsatz instance.
         out_dim (int): Number of output dimensions.
+        readouts (list, optional): Qubit indices to measure.
+            If None, uses the ansatz's existing readouts, or all qubits
+            if the ansatz has none. Defaults to None.
         params (np.ndarray, optional): Initial parameters for the ansatz.
             Defaults to None.
         optimizer (Union[str, dict, OptimizerBase], optional): The optimizer
@@ -98,6 +101,8 @@ class HQNN(Module):
         out_dim: int,
         params: np.ndarray = None,
         optimizer: Union[str, dict, OptimizerBase] = "adam",
+        *,
+        readouts: list = None,
     ):
         """
         Initialize an HQNN model.
@@ -105,6 +110,7 @@ class HQNN(Module):
         Args:
             ansatz (HEAnsatz): The quantum circuit ansatz.
             out_dim (int): Number of output dimensions.
+            readouts (list, optional): Readout qubits. Defaults to None.
             params (np.ndarray, optional): Initial parameters. Defaults to None.
             optimizer (Union[str, dict, OptimizerBase]): Optimizer. Defaults to "adam".
 
@@ -118,8 +124,10 @@ class HQNN(Module):
         if params is not None:
             bindings = dict(zip(ansatz.symbols, params))
             self._ansatz.assign_parameters(bindings)
-        self._ansatz.set_measurement(readouts=list(range(n_qubits)))
-        self._linear = Linear(n_qubits, out_dim)
+        if readouts is None:
+            readouts = self._ansatz.readouts if self._ansatz.readouts is not None else list(range(n_qubits))
+        self._ansatz.set_measurement(readouts=readouts)
+        self._linear = Linear(len(readouts), out_dim)
         super(HQNN, self).__init__(self._ansatz, self._linear)
         self.set_optimizer(optimizer)
 
