@@ -109,6 +109,11 @@ class NEQR(FRQI):
 
         return enc_cirs[0] if len(enc_cirs) == 1 else enc_cirs
 
+    def _validate_img(self, img: np.ndarray) -> None:
+        super()._validate_img(img)
+        if not np.all(np.isfinite(img)) or not np.all(img == np.floor(img)) or np.any(img >= self._grayscale):
+            raise ValueError("NEQR pixel values must be integers in [0, grayscale).")
+
     def _construct_encoder(self, img: np.ndarray, use_qic: bool) -> Circuit:
         """
         Construct the NEQR encoding circuit.

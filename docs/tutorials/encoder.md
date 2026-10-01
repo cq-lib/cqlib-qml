@@ -144,11 +144,11 @@ $$|\psi(\mathbf{x})\rangle = \frac{1}{\|\mathbf{x}\|} \sum_{i=0}^{N-1} x_i |i\ra
 
 **经典模式**：每个特征对应一个 RY 门：
 
-$$|\psi(x)\rangle = \bigotimes_{i=0}^{n-1} RY(x_i) |0\rangle$$
+$$|\psi(x)\rangle = \bigotimes_{i=0}^{n-1} RY(2x_i) |0\rangle$$
 
 **密集模式**：每个量子比特编码两个特征（RY + RZ）：
 
-$$|\psi(x)\rangle = \bigotimes_{i=0}^{n-1} RZ(x_{2i+1}) RY(x_{2i}) |0\rangle$$
+$$|\psi(x)\rangle = \bigotimes_{i=0}^{n-1} RZ(x_{2i+1}) RY(2x_{2i}) |0\rangle$$
 
 ### 使用示例
 
@@ -353,7 +353,8 @@ $$|I\rangle = \frac{1}{2^n} \sum_{i=0}^{2^{2n}-1} |c_i\rangle \otimes |i\rangle$
 
     # 2. 准备图像
     img = np.random.rand(4, 4)
-    img_quantized = change_grayscale(img, grayscale=4)
+    img_quantized = np.rint(change_grayscale(img, grayscale=4) * 3).astype(int)
+    # NEQR 使用整数颜色索引 0..3；FRQI 使用归一化灰度值
 
     # 3. 编码
     circuit = encoder(img_quantized)

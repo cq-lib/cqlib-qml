@@ -111,7 +111,8 @@ class ZZFeatureEncoder:
         elif self._entanglement == "circular":
             for i in range(n_qubits - 1):
                 pairs.append((i, i + 1))
-            pairs.append((n_qubits - 1, 0))
+            if n_qubits > 1:
+                pairs.append((n_qubits - 1, 0))
         elif self._entanglement == "full":
             for i in range(n_qubits):
                 for j in range(i + 1, n_qubits):

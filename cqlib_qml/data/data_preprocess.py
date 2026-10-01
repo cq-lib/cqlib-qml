@@ -30,6 +30,7 @@ Examples:
     ... )
 """
 
+import torch
 import collections
 import tqdm
 from torchvision import datasets, transforms
@@ -92,8 +93,9 @@ def downscale(X: np.ndarray, resize: tuple) -> np.ndarray:
         (1000, 4, 4)
     """
     transform = transforms.Resize(size=resize, antialias=False)
-    X = transform(X)
-    return X
+    is_numpy = isinstance(X, np.ndarray)
+    result = transform(torch.as_tensor(X) if is_numpy else X)
+    return result.numpy() if is_numpy else result
 
 
 def remove_conflict(X: np.ndarray, Y: np.ndarray, resize: tuple) -> tuple:
@@ -106,7 +108,7 @@ def remove_conflict(X: np.ndarray, Y: np.ndarray, resize: tuple) -> tuple:
     Args:
         X (np.ndarray): Image array.
         Y (np.ndarray): Label array.
-        resize (tuple): Original image dimensions.
+        resize (tuple): Dimensions of each output image.
 
     Returns:
         tuple: (X_cleaned, Y_cleaned) with conflicting samples removed.
@@ -117,14 +119,16 @@ def remove_conflict(X: np.ndarray, Y: np.ndarray, resize: tuple) -> tuple:
     """
     x_dict = collections.defaultdict(set)
     for x, y in zip(X, Y):
-        x_dict[tuple(x.numpy().flatten())].add(y.item())
+        pixels = x.detach().cpu().numpy() if isinstance(x, torch.Tensor) else np.asarray(x)
+        label = y.item() if hasattr(y, "item") else y
+        x_dict[tuple(pixels.flatten())].add(label)
     X_rmcon = []
     Y_rmcon = []
     for x in x_dict.keys():
         if len(x_dict[x]) == 1:
             X_rmcon.append(np.array(x).reshape(resize))
             Y_rmcon.append(list(x_dict[x])[0])
-    X = np.array(X_rmcon) / 255.0
+    X = np.array(X_rmcon).reshape((-1, *resize)) / 255.0
     Y = np.array(Y_rmcon)
     return X, Y
 
@@ -164,7 +168,7 @@ def change_grayscale(X: np.ndarray, grayscale: int) -> np.ndarray:
         np.ndarray: Quantized image array.
 
     Raises:
-        AssertionError: If grayscale is not between 2 and 256.
+        ValueError: If grayscale is not between 2 and 256.
 
     Examples:
         >>> # Reduce to 4 grayscale levels
@@ -175,11 +179,9 @@ def change_grayscale(X: np.ndarray, grayscale: int) -> np.ndarray:
     if grayscale < 2 or grayscale > 256:
         raise ValueError("grayscale should be between 2 and 256")
 
-    grays = np.linspace(0, 1, grayscale)
-    thresholds = np.linspace(0, 1, grayscale + 1)
-    for i in range(grayscale):
-        X[np.logical_and(X >= thresholds[i], X <= thresholds[i + 1])] = grays[i]
-    return X
+    X = np.asarray(X)
+    indices = np.minimum((X * grayscale).astype(int), grayscale - 1)
+    return indices / (grayscale - 1)
 
 
 def encoding_img(X: np.ndarray, encoding) -> list:
@@ -257,7 +259,8 @@ def get_mnist_dataloader(classes: list, resize: tuple, encoding, batch_size: int
         (32, 16) (32,)
 
     Note:
-        Images are automatically normalized to [0, 1] range and the
+        Images are normalized to [0, 1] before quantization.
+        NEQR receives integer indices in [0, grayscale). The
         original MNIST dimensions (28x28) are downscaled to the target
         resolution.
     """
@@ -284,6 +287,14 @@ def get_mnist_dataloader(classes: list, resize: tuple, encoding, batch_size: int
     # Quantize grayscale levels
     train_X = change_grayscale(train_X, grayscale)
     test_X = change_grayscale(test_X, grayscale)
+
+    # NEQR stores integer color indices rather than normalized brightness.
+    from cqlib_qml.encoder import NEQR
+    if isinstance(encoding, NEQR):
+        if grayscale != encoding._grayscale:
+            raise ValueError("grayscale must match the NEQR encoder's grayscale levels")
+        train_X = np.rint(train_X * (grayscale - 1)).astype(int)
+        test_X = np.rint(test_X * (grayscale - 1)).astype(int)
 
     # Apply quantum encoding
     train_X = encoding_img(train_X, encoding)

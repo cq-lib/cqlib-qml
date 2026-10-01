@@ -191,6 +191,8 @@ class FRQI(ImageEncoder):
             ValueError: If image is not square, not 2^n × 2^n,
                 or contains invalid pixel values.
         """
+        if img.ndim != 2 or img.size != self._n_pixels or not np.isfinite(img).all():
+            raise ValueError("Image must be finite, two-dimensional and match n_pixels.")
         # Check shape
         if not (img.shape[0] == img.shape[1] and 1 << int(np.log2(img.shape[0])) == img.shape[0]):
             raise ValueError("Invalid image. The image size should be 2^n x 2^n.")
@@ -232,7 +234,7 @@ class FRQI(ImageEncoder):
                 cgate = MCGate(self._n_pos_qubits, StandardGate.RY(theta))
                 circuit.append_mc_gate(cgate, list(range(self._n_qubits)))
             else:
-                pixel_val = int(img[i] / np.max(img) * 255)
+                pixel_val = int(img[i])
                 bin_color = bin(pixel_val)[2:].zfill(self._n_color_qubits)
                 for qid in range(self._n_color_qubits):
                     if bin_color[qid] == "1":
@@ -265,7 +267,7 @@ class FRQI(ImageEncoder):
             theta = float(key) / np.max(img) * np.pi if rotate else None
             min_dnf = self._get_min_expression(img_dict[key])
             dnf_circuit = self._construct_dnf_circuit(min_dnf, gid, theta)
-            qic_circuit = qic_circuit + dnf_circuit
+            qic_circuit.compose(dnf_circuit)
         for qid in range(self._n_pos_qubits):
             if self._q_state[qid] == 1:
                 qic_circuit.x(qid)
@@ -297,10 +299,10 @@ class FRQI(ImageEncoder):
             if i > 0:
                 uniqueness_dnf = self._get_uniqueness_dnf(cnf_list[:i], cnf_list[i])
                 uniqueness_dnf_circuit = self._construct_dnf_circuit(uniqueness_dnf, gid, theta)
-                dnf_circuit = dnf_circuit + uniqueness_dnf_circuit
+                dnf_circuit.compose(uniqueness_dnf_circuit)
             else:
                 cnf_circuit = self._construct_cnf_circuit(cnf_list[i], gid=gid, theta=theta)
-                dnf_circuit = dnf_circuit + cnf_circuit
+                dnf_circuit.compose(cnf_circuit)
 
         return dnf_circuit
 
@@ -363,7 +365,7 @@ class FRQI(ImageEncoder):
         for i in range(self._n_pixels):
             if img[i] < 1e-12:
                 continue
-            key = bin(img[i])[2:].zfill(self._n_color_qubits) if bin_key else str(img[i])
+            key = bin(int(img[i]))[2:].zfill(self._n_color_qubits) if bin_key else str(img[i])
             val = bin(i)[2:].zfill(self._n_pos_qubits) if bin_val else i
             if key not in img_dict.keys():
                 img_dict[key] = [val]

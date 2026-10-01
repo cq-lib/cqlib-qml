@@ -11,6 +11,16 @@ from cqlib_qml.algorithms import QSVM
 from cqlib_qml.encoder import AmplitudeEncoder, AngleEncoder
 
 
+@pytest.mark.parametrize('scale', [1e200, 1e-200, 1e308, 1e-308])
+@pytest.mark.parametrize('base', [np.array([1., 1.]), np.array([1., -1.]), np.array([1.+1j, -1.+1j])])
+def test_amplitude_large_and_small_finite_inputs(scale, base):
+    circuit = AmplitudeEncoder()(scale * base)[0]
+    state = Statevector(circuit.num_qubits)
+    state.apply_circuit(circuit)
+    expected = base / np.linalg.norm(base)
+    np.testing.assert_allclose(abs(np.vdot(expected, state.data)), 1., atol=1e-12)
+
+
 @pytest.mark.parametrize('gate,occurrences,expected', [('ry', 1, 2), ('ry', 2, 4), ('crx', 1, 8)])
 def test_parameter_shift_evaluation_cost(gate, occurrences, expected):
     from unittest.mock import patch

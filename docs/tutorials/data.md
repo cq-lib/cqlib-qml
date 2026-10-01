@@ -194,7 +194,7 @@ filter_targets(
 | 参数 | 类型 | 描述 |
 |------|------|------|
 | `X` | np.ndarray | 输入数据 |
-| `Y` | np.ndarray | 标签数组 |
+| `Y` | np.ndarray / torch.Tensor | 标签数组 |
 | `classes` | list | 保留的类别列表 |
 
 **返回**: `(X_filtered, Y_filtered)`
@@ -226,14 +226,14 @@ print(f"筛选后 Y: {Y_f}")  # 0→0, 2→1
 
 ```python
 downscale(
-    X: np.ndarray,
+    X: np.ndarray | torch.Tensor,
     resize: tuple
-) -> np.ndarray
+) -> np.ndarray | torch.Tensor
 ```
 
 | 参数 | 类型 | 描述 |
 |------|------|------|
-| `X` | np.ndarray | 输入图像数组 |
+| `X` | np.ndarray / torch.Tensor | 输入图像数组；输出保留输入类型 |
 | `resize` | tuple | 目标尺寸 (height, width) |
 
 ```python
@@ -268,9 +268,9 @@ remove_conflict(
 
 | 参数 | 类型 | 描述 |
 |------|------|------|
-| `X` | np.ndarray | 图像数组 |
-| `Y` | np.ndarray | 标签数组 |
-| `resize` | tuple | 图像原始尺寸 |
+| `X` | np.ndarray / torch.Tensor | 图像数组；清理后返回 NumPy 数组并除以 255 |
+| `Y` | np.ndarray / torch.Tensor | 标签数组 |
+| `resize` | tuple | 输出图像尺寸 |
 
 ### binary_img()
 
@@ -350,7 +350,7 @@ encoding_img(
 
 | 参数 | 类型 | 描述 |
 |------|------|------|
-| `X` | np.ndarray | 图像数组 |
+| `X` | np.ndarray / torch.Tensor | 图像数组 |
 | `encoding` | Encoder | 量子编码器实例 |
 
 ```python
@@ -492,6 +492,7 @@ print(f"量子比特数: {encoder._n_qubits}")
 ## 完整示例：MNIST 二分类数据加载
 
 ```python
+import numpy as np
 from cqlib_qml.data import Dataset, DataLoader
 from cqlib_qml.data.data_preprocess import get_mnist_dataloader
 from cqlib_qml.encoder import FRQI
@@ -713,3 +714,5 @@ loader = DataLoader(dataset, batch_size=4, drop_last=True)
 | `change_grayscale()` | 灰度量化 |
 | `encoding_img()` | 量子编码 |
 | `get_mnist_dataloader()` | 完整 MNIST 加载流程 |
+
+`get_mnist_dataloader` 在使用 NEQR 时将量化后的归一化灰度转为 `0..grayscale-1` 的整数颜色索引；其 `grayscale` 参数必须与 NEQR 编码器一致。直接调用 NEQR 时也需提供整数索引。`change_grayscale` 返回新数组，不修改输入。
