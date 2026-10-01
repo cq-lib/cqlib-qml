@@ -164,6 +164,22 @@ class Linear(Layer):
             self._gradients["b"] = np.zeros_like(bias)
         self._init = True
 
+    def load_params(self, summary_dict: dict) -> None:
+        """Validate parameter shapes before restoring a classical layer."""
+        expected = {"W": (self._out_dim, self._in_dim)}
+        if self._bias:
+            expected["b"] = (1, self._out_dim)
+        parameters = summary_dict["parameters"]
+        if set(parameters) != set(expected):
+            raise ValueError("Checkpoint parameter keys do not match the layer.")
+        for name, shape in expected.items():
+            if np.shape(parameters[name]) != shape:
+                raise ValueError(f"Checkpoint parameter {name} shape does not match {shape}.")
+        super().load_params(summary_dict)
+        self._X = []
+        for name in self._derived_variables:
+            self._derived_variables[name] = None
+
     def forward(self, X: np.ndarray, retain_derived: bool = True) -> np.ndarray:
         """
         Perform forward propagation.

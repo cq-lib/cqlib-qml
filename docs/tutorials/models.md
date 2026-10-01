@@ -94,8 +94,8 @@ $$f(x; \boldsymbol{\theta}) = \langle 0 | U_{\text{enc}}(x)^\dagger U_{\text{ans
 | `freeze()` | 冻结所有组件 |
 | `unfreeze()` | 解冻所有组件 |
 | `random_init()` | 随机初始化 |
-| `save_checkpoint(path, ep, it, latest)` | 保存检查点 |
-| `load_checkpoint(path)` | 加载检查点 |
+| `save_checkpoint(model_path, ep, it, latest=False)` | 保存检查点 |
+| `load_checkpoint(model_path)` | 加载检查点 |
 
 ### 完整使用示例
 
@@ -395,8 +395,8 @@ HQNN 结合了量子计算的高维特征表示能力和经典计算的线性变
 | `freeze()` | 冻结 |
 | `unfreeze()` | 解冻 |
 | `random_init()` | 随机初始化 |
-| `save_checkpoint(path, ep, it, latest)` | 保存检查点 |
-| `load_checkpoint(path)` | 加载检查点 |
+| `save_checkpoint(model_path, ep, it, latest=False)` | 保存检查点 |
+| `load_checkpoint(model_path)` | 加载检查点 |
 
 ### QNN
 

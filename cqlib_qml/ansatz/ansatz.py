@@ -135,13 +135,14 @@ class Ansatz:
             "in_dim": self.in_dim,
             "out_dim": self.out_dim,
             "readouts": self.readouts,
-            "hamiltonians": self.hams,
+            "hamiltonians": (None if self.hams is None else [
+                {"num_qubits": ham.num_qubits,
+                 "terms": [(str(pauli), coeff) for pauli, coeff in ham.terms]}
+                for ham in self.hams
+            ]),
             "circuit": self._circuit_summary(),
             "optimizer": (
-                {
-                    "cache": self._optimizer.cache,
-                    "hyperparameters": self._optimizer.hyperparameters,
-                }
+                self._optimizer.state_dict()
                 if self._optimizer
                 else None
             ),
@@ -576,13 +577,17 @@ class Ansatz:
         if not self._updatable:
             raise ValueError("The ansatz update is frozen.")
         self._optimizer = OptimizerInitializer(optimizer)()
+        # Each component owns its state; stable parameter keys must not collide
+        # when the same optimizer configuration is supplied to several layers.
+        if isinstance(optimizer, OptimizerBase):
+            self._optimizer = self._optimizer.copy()
 
     def set_measurement(self, **kwargs) -> None:
         """
         Set the measurement for the model.
 
-        Either `readouts` or `hams` must be provided. If both are provided,
-        `readouts` takes precedence.
+        Exactly one of `readouts` or `hams` must be provided.
+        Setting either replaces the previous measurement mode.
 
         Args:
             readouts (Union[int, list]): Qubit indices for Pauli-Z measurement.
@@ -652,7 +657,7 @@ class Ansatz:
         new_params = dict(self._bindings)
         for k, v in self._gradients.items():
             if k in self.symbols:
-                unique_key = f"{id(self)}_{k}"
+                unique_key = k
                 new_params[k] = self._optimizer(self._bindings[k], v, unique_key, cur_loss)
         self.assign_parameters(new_params)
 
@@ -692,11 +697,37 @@ class Ansatz:
             raise ValueError("The output dimensions to be loaded do not match.")
         if len(self) == 0:
             self._load_circuit(summary_dict["circuit"])
+        else:
+            saved_circuit = summary_dict["circuit"]
+            if saved_circuit["num_qubits"] != self.num_qubits:
+                raise ValueError("The loaded circuit does not match the current width.")
+            # Compare the canonical decomposed operations, including symbolic
+            # expressions and custom matrices, before changing any bindings.
+            restored = Ansatz(self.num_qubits)
+            restored._load_circuit(saved_circuit)
+            current_gates = self._circuit_summary()["gates"]
+            saved_gates = restored._circuit_summary()["gates"]
+            if not self._same_structure(current_gates, saved_gates):
+                raise ValueError("Checkpoint circuit structure does not match the current circuit.")
+            bindings = saved_circuit["parameters"]
+            if bindings is not None:
+                if set(bindings) != set(self.symbols):
+                    raise ValueError("Checkpoint parameter symbols do not match the current circuit.")
+                self.assign_parameters(bindings)
 
         readouts = summary_dict["readouts"]
         hams = summary_dict["hamiltonians"]
-        if self._readouts is not None and self._hams is not None:
-            ValueError("Both readouts and hamiltonians are provided, readouts will be used first.")
+        if hams is not None:
+            decoded = []
+            for item in hams:
+                if isinstance(item, Hamiltonian):  # Legacy in-memory summaries.
+                    decoded.append(item)
+                else:
+                    ham = Hamiltonian(item["num_qubits"])
+                    for pauli, coefficient in item["terms"]:
+                        ham.add_term(PauliString.from_str(pauli), coefficient)
+                    decoded.append(ham)
+            hams = decoded
         if readouts is not None:
             self.set_measurement(readouts=readouts)
         elif hams is not None:
@@ -709,11 +740,11 @@ class Ansatz:
             self.set_optimizer(optim)
 
     def _circuit_summary(self) -> dict:
-        """Generate a summary of the circuit structure."""
+        """Serialize canonical decomposed operations using only Python/NumPy values."""
         if len(self) == 0:
             return {}
         gates = []
-        for op in self.operations:
+        for op in self._circuit.decompose().operations:
             instruction = op.instruction
             gate_info = {}
             gate_info["qubits"] = [qubit.index for qubit in op.qubits]
@@ -744,10 +775,28 @@ class Ansatz:
                 gate_info["type"] = "unitary"
                 gate_info["label"] = instruction.name
                 gate_info["matrix"] = op.matrix()
+            elif instruction.is_directive:
+                gate_info["type"] = "directive"
+                gate_info["name"] = instruction.directive.name()
             else:
-                pass
+                raise ValueError(f"Unsupported checkpoint instruction: {instruction.name}")
             gates.append(gate_info)
         return {"num_qubits": self.num_qubits, "parameters": self._bindings, "gates": gates}
+
+    @staticmethod
+    def _same_structure(left, right):
+        if len(left) != len(right):
+            return False
+        for a, b in zip(left, right):
+            if a.keys() != b.keys():
+                return False
+            for key in a:
+                if key == "matrix":
+                    if not np.array_equal(a[key], b[key]):
+                        return False
+                elif a[key] != b[key]:
+                    return False
+        return True
 
     def _load_circuit(self, cir_summary: dict) -> None:
         """Load a circuit from a summary dictionary."""
@@ -769,16 +818,21 @@ class Ansatz:
                 gate_params.append(param)
             gate_type = gate_info["type"]
             if gate_type == "standard":
-                instruction = getattr(StandardGate, gate_info["name"].upper())
+                instruction = StandardGate.from_name(gate_info["name"])
             elif gate_type == "mcgate":
-                base_gate = getattr(StandardGate, gate_info["base_gate"].upper())
+                base_gate = StandardGate.from_name(gate_info["base_gate"])
                 num_ctrl_qubits = gate_info["num_ctrl_qubits"]
                 instruction = MCGate(num_ctrl_qubits, base_gate)
-            else:
+            elif gate_type == "directive":
+                instruction = Instruction.from_directive(getattr(Directive, gate_info["name"])())
+            elif gate_type == "unitary":
                 instruction = UnitaryGate(gate_info["label"], gate_num_qubits).with_matrix(gate_info["matrix"])
+            else:
+                raise ValueError(f"Unsupported checkpoint gate type: {gate_type}")
             self.append(instruction, gate_qubits, gate_params)
         parameters = cir_summary["parameters"]
-        self.assign_parameters(parameters)
+        if parameters is not None:
+            self.assign_parameters(parameters)
 
     def _validate_hamiltonians(self, hams):
         """Validate and format Hamiltonians."""

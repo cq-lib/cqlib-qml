@@ -198,6 +198,36 @@ def test_grayscale_does_not_mutate_input():
     assert not np.shares_memory(original, result)
 
 
+def test_checkpoint_selects_existing_epoch_iteration_pair(tmp_path):
+    model = Module(linear())
+    model.save_checkpoint(str(tmp_path), 1, 100)
+    model._nets[0].parameters['W'][:] = 2
+    model.save_checkpoint(str(tmp_path), 2, 1)
+    (tmp_path / 'model.npy').unlink()
+    (tmp_path / 'garbage.npy').write_text('ignored')
+    target = Module(linear())
+    assert target.load_checkpoint(str(tmp_path)) == (2, 2)
+    np.testing.assert_array_equal(target._nets[0].parameters['W'], 2)
+
+
+def test_checkpoint_rejects_component_count_and_validates_before_mutation(tmp_path):
+    saved = Module(linear(weight=9), linear(weight=8))
+    saved.save_checkpoint(str(tmp_path), 1, 1)
+    single = Module(linear())
+    with pytest.raises(ValueError, match='count'):
+        single.load_checkpoint(str(tmp_path))
+    target = Module(linear(), linear())
+    file = tmp_path / 'model.npy'
+    checkpoint = np.load(file, allow_pickle=True).item()
+    values = list(checkpoint['module'].values())
+    values[1]['hyperparameters']['in_dim'] = 2
+    np.save(file, checkpoint)
+    before = deepcopy(target._nets[0].parameters)
+    with pytest.raises(ValueError, match='dimensions'):
+        target.load_checkpoint(str(file))
+    np.testing.assert_array_equal(target._nets[0].parameters['W'], before['W'])
+
+
 def test_tutorial_custom_layer_and_model_composition():
     root = Path(__file__).resolve().parents[1]
     text = (root / 'docs/tutorials/layer.md').read_text()
@@ -298,3 +328,23 @@ def test_mnist_preprocessing_to_neqr_uses_integer_color_indices(monkeypatch):
             assert np.count_nonzero(np.abs(state.data) > 1e-10) == 4
     with pytest.raises(ValueError, match='grayscale'):
         prep.get_mnist_dataloader(classes=[0, 1], resize=(2, 2), encoding=encoder, grayscale=2)
+
+
+@pytest.mark.parametrize('invalid', ['weight_shape', 'parameter_keys', 'metadata'])
+def test_checkpoint_invalid_payload_does_not_change_any_component(tmp_path, invalid):
+    Module(linear(weight=9), linear(weight=8)).save_checkpoint(str(tmp_path), 1, 1)
+    path = tmp_path / 'model.npy'
+    payload = np.load(path, allow_pickle=True).item()
+    parameters = list(payload['module'].values())[1]['parameters']
+    if invalid == 'weight_shape':
+        parameters['W'] = np.ones((2, 1))
+    elif invalid == 'parameter_keys':
+        parameters['unexpected'] = np.zeros(1)
+    else:
+        payload.pop('epoch')
+    np.save(path, payload)
+    target = Module(linear(), linear())
+    with pytest.raises(ValueError):
+        target.load_checkpoint(str(path))
+    for layer in target._nets:
+        np.testing.assert_array_equal(layer.parameters['W'], [[1.]])

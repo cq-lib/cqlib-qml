@@ -167,6 +167,31 @@ def train_step(model, data):
     model.zero_grad()
 
 
+@pytest.mark.parametrize("hybrid", [False, True])
+def test_checkpoint_restores_predictions_and_next_adam_step(tmp_path, hybrid):
+    def make_model():
+        ansatz = HEAnsatz(2, 1, ["RY", "CX"])
+        if hybrid:
+            return HQNN(ansatz, 1, np.array([0.2, 0.4]), "adam", readouts=[0])
+        return QNN(ansatz, [0], np.array([0.2, 0.4]), "adam")
+    model = make_model()
+    data = Circuit(2)
+    data.ry(1, 0.3)
+    for _ in range(3):
+        train_step(model, data)
+    expected = model.forward(data, False)
+    model.save_checkpoint(str(tmp_path), ep=2, it=7)
+    restored = make_model()
+    assert restored.load_checkpoint(str(tmp_path)) == (2, 8)
+    np.testing.assert_allclose(restored.forward(data, False), expected, atol=1e-14)
+    for original, loaded in zip(model._nets, restored._nets):
+        assert loaded._optimizer.cur_step == original._optimizer.cur_step == 3
+        assert loaded._optimizer.cache.keys() == original._optimizer.cache.keys()
+    train_step(model, data)
+    train_step(restored, data)
+    np.testing.assert_allclose(restored.forward(data, False), model.forward(data, False), atol=1e-14)
+
+
 def test_adaptive_scheduler_and_optimizer_state_roundtrip():
     scheduler = KingScheduler(initial_lr=0.1)
     scheduler.current_lr = 0.025
@@ -223,3 +248,77 @@ def test_qnn_parameters_learn_over_multiple_epochs():
     final = model.forward(circuit, False)[0, 0] ** 2
     assert final < initial * 1e-5
     assert abs(model._ansatz._bindings["params0_0"] - 0.2) > 0.1
+
+
+def test_craml_checkpoint_legacy_symbols():
+    ansatz = CRAML(4, 3)
+    expected = [f"params{layer}_{index}" for layer, count in [(0, 8), (1, 4)] for index in range(count)]
+    assert ansatz.symbols == expected
+    bindings = dict(zip(expected, np.linspace(0.1, 0.8, len(expected))))
+    ansatz.assign_parameters(bindings)
+    restored = CRAML(4, 3)
+    restored.load_params(deepcopy(ansatz.summary))
+    np.testing.assert_allclose(restored.forward(), ansatz.forward())
+
+
+def test_optimizer_instances_are_independent_between_components():
+    from cqlib_qml.layer import Linear
+    from cqlib_qml.models import Module
+    configuration = Adam(lr=0.01)
+    model = Module(Linear(2, 2), Linear(2, 1))
+    model.set_optimizer(configuration)
+    first, second = model._nets
+    assert first._optimizer is not second._optimizer
+    train_step(model, np.array([[0.3, 0.8]]))
+    assert first._optimizer.cur_step == second._optimizer.cur_step == 1
+    assert configuration.cur_step == 0
+    assert first._optimizer.cache["W"]["mean"].shape != second._optimizer.cache["W"]["mean"].shape
+
+
+def test_checkpoint_rebuilds_native_gate_payloads():
+    ansatz = Ansatz(2)
+    ansatz.h(0)
+    ansatz.phase(0, Parameter("theta"))
+    ansatz.multi_control(StandardGate.RY, [0], [1], [Parameter("phi")])
+    ansatz.unitary(UnitaryGate("X", 1).with_matrix(np.array([[0, 1], [1, 0]])), [1])
+    ansatz.set_measurement(readouts=[0, 1])
+    ansatz.assign_parameters({"theta": 0.3, "phi": 0.7})
+    restored = Ansatz(2)
+    restored.load_params(deepcopy(ansatz.summary))
+    np.testing.assert_allclose(restored._assigned_cir.to_matrix(), ansatz._assigned_cir.to_matrix())
+    np.testing.assert_allclose(restored.forward(), ansatz.forward())
+    ham = Hamiltonian(2)
+    ham.add_term(PauliString.from_str("XX"), 1.0)
+    expected = finite_difference(lambda b: expectations(ansatz._circuit, b, [ham]), ansatz._bindings)
+    gradients = AdjointDifferentiator().run(ansatz._circuit, ansatz._bindings,
+                                            state(ansatz._assigned_cir).data, hamiltonians=[ham])
+    for symbol in expected:
+        np.testing.assert_allclose(gradients[symbol], expected[symbol], atol=1e-8)
+
+
+def test_craml_intermediate_parameter_names_migrate_with_optimizer():
+    ansatz = CRAML(4, 2)
+    bindings = dict(zip(ansatz.symbols, np.linspace(0.1, 0.8, 8)))
+    ansatz.assign_parameters(bindings)
+    ansatz.set_optimizer("adam")
+    ansatz.forward()
+    ansatz.backward(np.ones((1, 1)))
+    ansatz.update()
+    summary = deepcopy(ansatz.summary)
+    modern = [f"params{layer}_{index}" for layer in range(2) for index in range(4)]
+    mapping = dict(zip([str(p) for p in ansatz._init_parameters(4)], modern))
+    summary["circuit"]["parameters"] = {mapping[key]: val for key, val in ansatz._bindings.items()}
+    for gate in summary["circuit"]["gates"]:
+        gate["params"] = [mapping.get(value, value) if isinstance(value, str) else value
+                          for value in gate["params"]]
+    summary["optimizer"]["cache"] = {mapping[key]: val for key, val in summary["optimizer"]["cache"].items()}
+    restored = CRAML(4, 2)
+    restored.load_params(summary)
+    np.testing.assert_allclose(restored.forward(), ansatz.forward())
+    ansatz.zero_grad()
+    restored.zero_grad()
+    for model in (ansatz, restored):
+        model.forward()
+        model.backward(np.ones((1, 1)))
+        model.update()
+    np.testing.assert_allclose(list(restored._bindings.values()), list(ansatz._bindings.values()))

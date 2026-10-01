@@ -178,6 +178,87 @@ def test_measurement_modes_replace_each_other():
     np.testing.assert_allclose(ansatz.backward()['t'], [-np.sin(0.3)])
 
 
+def test_hamiltonian_checkpoint_round_trip_and_next_step(tmp_path):
+    original = ry_ansatz()
+    ham = Hamiltonian(1)
+    ham.add_term(PauliString.from_str('-X'), -0.7)
+    ham.add_term(PauliString.from_str('Z'), 0.2)
+    original.set_measurement(hams=[ham, Hamiltonian(1)])
+    original.set_optimizer('adam')
+    original.forward()
+    original.backward(np.ones((1, 2)))
+    original.update()
+    Module(original).save_checkpoint(str(tmp_path), 2, 7)
+    restored = ry_ansatz()
+    restored.set_measurement(hams=[ham, Hamiltonian(1)])
+    Module(restored).load_checkpoint(str(tmp_path))
+    np.testing.assert_allclose(restored.forward(), original.forward())
+    assert restored.hams[0] == ham
+    assert restored.hams[1].num_terms == 0
+    for model in (original, restored):
+        model.backward(np.ones((1, 2)))
+        model.update()
+    assert restored._bindings == pytest.approx(original._bindings)
+
+
+@pytest.mark.parametrize('method', ['adjoint', 'parameter_shift'])
+def test_nested_circuit_and_barrier_checkpoint_restore_matrix_and_gradients(tmp_path, method):
+    original = ry_ansatz()
+    nested = Circuit(1)
+    nested.ry(0, 2 * Parameter('p'))
+    original.append(Instruction.from_circuit_gate(nested.to_gate('nested')), [0], [Parameter('t')])
+    original.append(Instruction.from_directive(Directive.barrier()), [0])
+    # Exercise barrier together with a custom matrix in adjoint's inverse path.
+    original.unitary(UnitaryGate('identity', 1).with_matrix(np.eye(2)), [0])
+    original.assign_parameters({'t': 0.3})
+    original.set_differentiator(method)
+    Module(original).save_checkpoint(str(tmp_path), 1, 3)
+    restored = Ansatz(1)
+    restored.set_measurement(readouts=[0])
+    Module(restored).load_checkpoint(str(tmp_path))
+    restored.set_differentiator(method)
+    np.testing.assert_allclose(restored._assigned_cir.to_matrix(), original._assigned_cir.to_matrix())
+    for model in (original, restored):
+        np.testing.assert_allclose(model.forward(), [[np.cos(0.9)]], atol=1e-12)
+        np.testing.assert_allclose(model.backward()['t'], [-3 * np.sin(0.9)], atol=1e-10)
+
+
+@pytest.mark.parametrize('difference', ['gate', 'qubit', 'expression', 'order', 'matrix'])
+def test_checkpoint_rejects_different_circuit_structure(difference):
+    source = Ansatz(2)
+    source.ry(0, Parameter('t'))
+    source.rx(1, 0.2)
+    source.unitary(UnitaryGate('custom', 1).with_matrix(np.eye(2)), [0])
+    source.set_measurement(readouts=[0])
+    source.assign_parameters({'t': 0.3})
+    target = Ansatz(2)
+    if difference == 'order':
+        target.rx(1, 0.2)
+    getattr(target, 'rz' if difference == 'gate' else 'ry')(
+        1 if difference == 'qubit' else 0,
+        2 * Parameter('t') if difference == 'expression' else Parameter('t'))
+    if difference != 'order':
+        target.rx(1, 0.2)
+    matrix = np.array([[0, 1], [1, 0]]) if difference == 'matrix' else np.eye(2)
+    target.unitary(UnitaryGate('custom', 1).with_matrix(matrix), [0])
+    target.set_measurement(readouts=[0])
+    target.assign_parameters({'t': 0.8})
+    with pytest.raises(ValueError, match='structure'):
+        target.load_params(deepcopy(source.summary))
+    assert target._bindings == {'t': 0.8}
+
+
+def test_legacy_in_memory_hamiltonian_summary():
+    source = ry_ansatz()
+    ham = Hamiltonian.from_pauli(PauliString.from_str('X'))
+    source.set_measurement(hams=[ham])
+    summary = source.summary
+    summary['hamiltonians'] = [ham]
+    restored = Ansatz(1)
+    restored.load_params(summary)
+    np.testing.assert_allclose(restored.forward(), [[np.sin(0.3)]])
+
+
 def test_single_feature_circular_encoder_matches_linear():
     data = np.array([[0.3], [-0.8]])
     circular = ZZFeatureEncoder(entanglement='circular')(data)

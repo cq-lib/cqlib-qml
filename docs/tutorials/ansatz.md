@@ -431,20 +431,19 @@ CRADL 利用这种结构，让位置量子比特同时与颜色量子比特和�
 
 ### 参数计数
 
-$$m = 2 \times (n_{\text{pos}} - 2) \times L$$
+$$m = 2 \times (n_{\text{qubits}} - 2) \times L = 2n_{\text{pos}}L$$
 
-对于 $2^n \times 2^n$ 图像，$n_{\text{pos}} = 2n + 1$。
+其中 $n_{\text{pos}} = n_{\text{qubits}} - 2$，另有一个颜色量子比特和一个读出量子比特。
 
 ### 使用示例
 
 ```python
 from cqlib_qml.ansatz import CRADL
 
-# 4x4 图像: n_pixels=16, n_pos=log2(16)=4
-# 量子比特数 = 4 + 1 = 5
-ansatz = CRADL(n_qubits=5, layers=2)
-ansatz.set_measurement(readouts=[4])
-print(f"参数数量: {ansatz.in_dim}")  # 2 × (5-2) × 2 = 12
+# 4x4 图像: 4 个位置量子比特 + 1 个颜色 + 1 个读出
+ansatz = CRADL(n_qubits=6, layers=2)
+ansatz.set_measurement(readouts=[5])
+print(f"参数数量: {ansatz.in_dim}")  # 2 × (6-2) × 2 = 16
 ```
 
 ---
@@ -455,7 +454,7 @@ CRAML 是 CRADL 的变体，每层同时应用 XX 和 ZZ 门。
 
 ### 设计原理
 
-CRAML 的设计目标是比 CRADL 具有更高的参数效率。通过将 XX 和 ZZ 门混合排列，可以在相同的层数下实现更强的表达能力。
+CRAML 与 CRADL 的参数数量相同，区别在于 XX 和 ZZ 门的排列顺序。每个位置量子比特的参数同时用于颜色量子比特和读出量子比特。
 
 ### 参数计数
 
@@ -466,19 +465,19 @@ $$m = 2 \times n_{\text{pos}} \times L$$
 ```python
 from cqlib_qml.ansatz import CRAML
 
-# 5 量子比特: 4 个位置 + 1 个颜色
+# 5 量子比特: 3 个位置 + 1 个颜色 + 1 个读出
 ansatz = CRAML(n_qubits=5, layers=2)
 ansatz.set_measurement(readouts=[4])
-print(f"参数数量: {ansatz.in_dim}")  # 2 × 5 × 2 = 20
+print(f"参数数量: {ansatz.in_dim}")  # 2 × (5-2) × 2 = 12
 ```
 
 ### CRADL 与 CRAML 的对比
 
 | 特性 | CRADL | CRAML |
 |------|-------|-------|
-| 参数数量 | $2(n_{\text{pos}}-2)L$ | $2n_{\text{pos}}L$ |
+| 参数数量 | $2(n_{\text{qubits}}-2)L$ | $2(n_{\text{qubits}}-2)L$ |
 | 门排列 | XX 门全部在 ZZ 门前 | XX 和 ZZ 交替 |
-| 适用场景 | 需要深度表达 | 需要参数效率 |
+| 门顺序选择 | 分组排列 | 交替排列 |
 
 ---
 
@@ -489,7 +488,7 @@ print(f"参数数量: {ansatz.in_dim}")  # 2 × 5 × 2 = 20
 | 通用量子机器学习 | HEAnsatz | 灵活可配置，硬件效率高 |
 | 二分类（简单） | BasicQNN | 结构简单，易于理解 |
 | 图像分类（FRQI） | CRADL | 专门设计，表达力强 |
-| 图像分类（参数效率） | CRAML | 混合设计，参数利用率高 |
+| 图像分类（交替门排列） | CRAML | XX 与 ZZ 交替排列 |
 | 完全自定义 | Ansatz 基类 | 最大灵活性 |
 
 ---

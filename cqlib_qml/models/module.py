@@ -242,7 +242,9 @@ class Module:
                 key = "ansatz{}".format(i)
             else:
                 key = "layer{}".format(i)
-            module_info[key] = self._nets[i].summary
+            summary = self._nets[i].summary
+            # Layer.summary is a method, Ansatz.summary is a property.
+            module_info[key] = summary() if callable(summary) else summary
         checkpoint["epoch"] = ep
         checkpoint["iter"] = it
         checkpoint["module"] = module_info
@@ -276,17 +278,15 @@ class Module:
         """
 
         def find_fname(model_path):
-            f_list = sorted(os.listdir(model_path))
-            ep = 0
-            it = 0
-            for f in f_list:
-                if f.endswith(".npy"):
-                    nums = f[:-4].split("_")
-                    if len(nums) >= 2:
-                        ep = max(ep, int(nums[0]))
-                        it = max(it, int(nums[1]))
-            fname = str(ep) + "_" + str(it) + ".npy"
-            return fname
+            import re
+            candidates = []
+            for name in os.listdir(model_path):
+                match = re.fullmatch(r"(\d+)_(\d+)\.npy", name)
+                if match:
+                    candidates.append((int(match[1]), int(match[2]), name))
+            if not candidates:
+                raise ValueError("No numbered checkpoints found.")
+            return max(candidates)[2]
 
         try:
             if model_path.endswith(".npy"):
@@ -302,13 +302,24 @@ class Module:
             raise ValueError(f"Invalid model path: {model_path}. Error: {e}")
 
         try:
-            for val, net in zip(checkpoint.item()["module"].values(), self._nets):
+            from copy import deepcopy
+            data = checkpoint.item()
+            ep, it = data["epoch"], data["iter"]
+            values = list(data["module"].values())
+            if len(values) != len(self._nets):
+                raise ValueError("Checkpoint component count does not match model.")
+            # Validate every component on a copy before changing the live model.
+            for val, net in zip(values, self._nets):
+                # Hamiltonians are native objects that cannot be pickled; validation
+                # replaces measurements without modifying the existing observables.
+                memo = {id(ham): ham for ham in (getattr(net, "_hams", None) or [])}
+                candidate = deepcopy(net, memo)
+                candidate.load_params(deepcopy(val))
+            for val, net in zip(values, self._nets):
                 net.load_params(val)
         except Exception as e:
             raise ValueError(f"Mismatched model. Error: {e}")
 
-        ep = checkpoint.item()["epoch"]
-        it = checkpoint.item()["iter"]
         print(f"Successfully restored checkpoint at ep: {ep} it: {it}")
         return ep, it + 1
 

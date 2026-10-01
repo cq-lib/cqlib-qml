@@ -51,6 +51,26 @@ class TestCRAML:
         ansatz = CRAML(n_qubits=4, layers=2)
         assert ansatz.num_qubits == 4
 
+    def test_num_parameters(self):
+        # Each layer uses 2 * (n_qubits - 2) trainable parameters:
+        # one shared XX parameter and one shared ZZ parameter per position qubit.
+        assert CRAML(n_qubits=3, layers=2).in_dim == 4
+        assert CRAML(n_qubits=4, layers=2).in_dim == 8
+        assert CRAML(n_qubits=5, layers=3).in_dim == 18
+
+    def test_no_unused_parameters_created(self):
+        # _init_parameters must create exactly the parameters the circuit uses.
+        ansatz = CRAML(n_qubits=4, layers=2)
+        assert len(ansatz._init_parameters(4)) == ansatz.in_dim
+
+    def test_layer_parameter_names(self):
+        # Preserve the symbols actually used in pre-migration checkpoints.
+        ansatz = CRAML(n_qubits=4, layers=2)
+        assert ansatz.symbols == [
+            "params0_0", "params0_1", "params0_2", "params0_3",
+            "params0_4", "params0_5", "params0_6", "params0_7",
+        ]
+
     def test_too_few_qubits(self):
         with pytest.raises(ValueError, match="n_qubits should be >= 3"):
             CRAML(n_qubits=2, layers=1)
