@@ -155,6 +155,59 @@ def test_documented_scheduler_restore_preserves_next_step(cls):
     assert restored(5, cur_loss=1.) == pytest.approx(scheduler(5, cur_loss=1.))
 
 
+@pytest.mark.parametrize('labels', [[2, 3], [-1, 1], ['cat', 'dog']])
+@pytest.mark.parametrize('loss', ['BCE', 'MSE', 'CrossEntropy'])
+def test_vqc_label_mapping_and_classifier_contract(labels, loss):
+    a = HEAnsatz(2, d=1, layers=['RY'])
+    model = VQC(a, AngleEncoder(mode='classical'), loss=loss,
+                readouts=[0, 1] if loss == 'CrossEntropy' else None, epochs=1, verbose=False)
+    assert is_classifier(model)
+    for method in [model.predict, model.predict_proba]:
+        with pytest.raises(NotFittedError):
+            method(np.ones((2, 2)))
+    with pytest.raises(NotFittedError):
+        _ = model.classes_
+    copy = clone(model)
+    assert copy.readouts == model.readouts
+    X = np.array([[.1, .2], [.4, .5], [.7, .8], [.2, .1]])
+    y = np.array(labels * 2)
+    model.fit(X, y)
+    # Compare to the same trained circuit with conventional integer labels.
+    reference = VQC(model.ansatz, model.encoder, loss=loss, readouts=model.readouts, epochs=0, verbose=False)
+    reference.fit(X, np.array([0, 1, 0, 1]))
+    expected = model.classes_[reference.predict(X)]
+    np.testing.assert_array_equal(model.predict(X), expected)
+    np.testing.assert_allclose(model.predict_proba(X).sum(axis=1), 1)
+
+
+@pytest.mark.parametrize('loss,readouts,labels', [('BCE', [0], [0, 1, 2]),
+                                                ('CrossEntropy', [0, 1], [0, 1, 2]),
+                                                ('MSE', [0, 1], [0, 1]),
+                                                ('MSE', [0], [0, 1, 2]),
+                                                ('BCE', [0], [1, 1, 1])])
+def test_vqc_validates_actual_class_count(loss, readouts, labels):
+    model = VQC(HEAnsatz(2, d=1, layers=['RY']), AngleEncoder(), loss=loss,
+                readouts=readouts, epochs=1, verbose=False)
+    with pytest.raises(ValueError, match='class|readout'):
+        model.fit(np.ones((len(labels), 2)), np.array(labels))
+
+
+def test_qsvm_clone_grid_search_and_fitted_contract():
+    model = QSVM(AngleEncoder(mode='classical'), class_weight='balanced', gamma=.37)
+    assert is_classifier(model)
+    copied = clone(model)
+    assert copied.svm_kwargs == model.svm_kwargs
+    copied.set_params(gamma=.2)
+    assert copied.svm_kwargs['gamma'] == .2
+    for method in [model.predict, model.predict_proba, model.decision_function]:
+        with pytest.raises(NotFittedError):
+            method(np.ones((2, 2)))
+    X = np.array([[.1, .2], [.2, .1], [.3, .2], [.8, .7], [.7, .8], [.9, .8]])
+    y = np.array([2, 2, 2, 3, 3, 3])
+    search = GridSearchCV(model, {'C': [.5, 1.]}, cv=2).fit(X, y)
+    assert search.best_estimator_.svm_kwargs == model.svm_kwargs
+
+
 @pytest.mark.parametrize('pixel', [0, 1])
 def test_qubit_lattice_uniform_binary_state(pixel):
     circuit = QubitLattice(4)(np.full((2, 2), pixel))
@@ -255,6 +308,30 @@ def test_tutorial_softmax_loss_value():
     assert loss(np.array([[2., 1., .1]]), np.array([[1., 0., 0.]])) == pytest.approx(.4170300163)
 
 
+def test_vqc_multiclass_original_labels():
+    X = np.array([[.1, .2, .3], [.5, .4, .3], [.9, .8, .7]])
+    labels = np.array(['red', 'blue', 'green'])
+    model = VQC(HEAnsatz(3, d=1, layers=['RY']), AngleEncoder(mode='classical'),
+                loss='CrossEntropy', n_classes=3, readouts=[0, 1, 2], epochs=1, verbose=False)
+    model.fit(X, labels)
+    probabilities = model.predict_proba(X)
+    np.testing.assert_array_equal(model.predict(X), model.classes_[probabilities.argmax(axis=1)])
+    assert probabilities.shape == (3, 3)
+
+
+def test_vqc_cross_entropy_epoch_loss_is_per_sample(capsys):
+    X = np.array([[.1, .2], [.3, .4], [.5, .6]])
+    y = np.array([0, 1, 0])
+    model = VQC(HEAnsatz(2, d=1, layers=['RY']), AngleEncoder(mode='classical'),
+                loss='CrossEntropy', readouts=[0, 1], optimizer=SGD(lr=0),
+                epochs=1, batch_size=2, verbose=True)
+    model.fit(X, y)
+    printed = float(re.search(r'loss: ([0-9.]+)', capsys.readouterr().out)[1])
+    probabilities = model.predict_proba(X)
+    expected = -np.log(probabilities[np.arange(3), y]).mean()
+    assert printed == pytest.approx(expected, abs=5e-5)
+
+
 def test_optimizer_mid_step_restore_does_not_repeat_scheduler_observation():
     opt = SGD(lr_scheduler=KingScheduler(patience=2))
     opt.step()
@@ -348,3 +425,14 @@ def test_checkpoint_invalid_payload_does_not_change_any_component(tmp_path, inva
         target.load_checkpoint(str(path))
     for layer in target._nets:
         np.testing.assert_array_equal(layer.parameters['W'], [[1.]])
+
+
+def test_documented_qsvm_calibration_workaround():
+    from sklearn.calibration import CalibratedClassifierCV
+    X = np.array([[.1, .2], [.2, .1], [.3, .2], [.8, .7], [.7, .8], [.9, .8]])
+    y = np.array([2, 2, 2, 3, 3, 3])
+    estimator = CalibratedClassifierCV(QSVM(AngleEncoder(mode='classical')),
+                                       ensemble=False, cv=2).fit(X, y)
+    probabilities = estimator.predict_proba(X)
+    assert probabilities.shape == (6, 2)
+    np.testing.assert_allclose(probabilities.sum(axis=1), 1)

@@ -159,6 +159,46 @@ def test_softmax_loss_gradient_consistency(logits, target):
     assert loss(logits + 1e4, target) == pytest.approx(value)
 
 
+@pytest.mark.parametrize("loss_name,readouts", [
+    ("CrossEntropy", [0, 1]), ("BCE", None), ("MSE", [0]), ("MSE", [0, 1, 2]),
+])
+def test_vqc_training_step_matches_loss_gradient(loss_name, readouts):
+    n_qubits = max(2, len(readouts or [0]))
+    ansatz = HEAnsatz(n_qubits, 1, ["RY", "CX"])
+    bindings = dict(zip(ansatz.symbols, np.linspace(0.3, 0.7, n_qubits)))
+    ansatz.assign_parameters(bindings)
+    vqc = VQC(ansatz, AngleEncoder(mode="classical"), readouts=readouts, loss=loss_name,
+              n_classes=3 if n_qubits == 3 else 2,
+              epochs=1, batch_size=3, optimizer="sgd(lr=0.001)", verbose=False)
+    if n_qubits == 3:
+        x, y = np.array([[0.1, 0.3, 0.4], [0.5, 0.8, 0.2], [0.7, 0.3, 0.9]]), np.array([0, 1, 2])
+    else:
+        x, y = np.array([[0.1, 0.3], [0.5, 0.8]]), np.array([0, 1])
+    encoded = vqc._encode(x)
+    actual_readouts = [0] if readouts is None else readouts
+    hams = []
+    for qubit in actual_readouts:
+        ham = Hamiltonian(n_qubits)
+        pauli = "".join("Z" if index == n_qubits - 1 - qubit else "I" for index in range(n_qubits))
+        ham.add_term(PauliString.from_str(pauli), 1.0)
+        hams.append(ham)
+    def value(b):
+        rows = []
+        for encoder in encoded:
+            circuit = Circuit(n_qubits)
+            circuit.compose(encoder)
+            circuit.compose(ansatz._circuit)
+            rows.append(expectations(circuit, b, hams))
+        pred, target = vqc._prepare_for_loss(np.array(rows), y)
+        return vqc._get_loss_fn()(pred, target)
+    gradient = finite_difference(value, bindings)
+    before = value(bindings)
+    vqc.fit(x, y)
+    for symbol in bindings:
+        assert (bindings[symbol] - ansatz._bindings[symbol]) / 0.001 == pytest.approx(gradient[symbol], abs=1e-7)
+    assert value(ansatz._bindings) < before
+
+
 def train_step(model, data):
     model.zero_grad()
     output = model.forward(data)

@@ -183,7 +183,7 @@ Total support vectors: 130
 
 #### predict_proba(X)
 
-返回类别概率估计（需设置 `probability=True`）。内部使用 Platt 缩放将 SVM 的决策值映射为概率。
+返回类别概率估计（需设置 `probability=True`）。 scikit-learn 1.9 已弃用 SVC 的 `probability` 参数，计划在 1.11 移除；当前 QSVM 此选项同样受影响。新代码可使用 `CalibratedClassifierCV(QSVM(encoder=encoder), ensemble=False)` 校准分类概率。内部使用 Platt 缩放将 SVM 的决策值映射为概率。
 
 ```python
 qsvm = QSVM(encoder=encoder, C=1.0, probability=True)
@@ -288,6 +288,8 @@ VQC(
 | `epochs` | int | 训练轮数 |
 | `batch_size` | int | 批次大小 |
 | `verbose` | bool | 是否打印训练进度 |
+
+训练日志中的 epoch loss：MSE 对所有样本和输出元素取均值；BCE 对样本取均值；CrossEntropy 对每样本的交叉熵取均值。多分类 MSE 不对类别维度求和，数值因此不能直接与 CrossEntropy 比较。最后一个不足 batch_size 的批次按实际样本数加权。
 
 ### 核心方法
 
@@ -713,7 +715,7 @@ for epoch in range(EPOCHS):
 ### 3. 性能优化
 
 ```python
-# 1. 使用 adjoint 不同iator（仿真更快）
+# 1. 使用 adjoint 微分器（仿真更快）
 ansatz.set_differentiator("adjoint")
 
 # 2. 设置合理的批次大小
@@ -781,7 +783,7 @@ qkm = QKM(encoder=encoder, swap_test=False)
 **解决方案:**
 
 ```python
-# 使用参数偏移不同iator（更稳定）
+# 使用参数偏移微分器（更稳定）
 ansatz.set_differentiator("parameter_shift")
 
 # 或调整移位量

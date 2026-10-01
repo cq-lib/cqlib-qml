@@ -103,6 +103,34 @@ def test_repeated_backward_reuses_jacobian(differentiator, batch):
         a.backward(np.ones_like(output))
 
 
+@pytest.mark.parametrize('replace_encoder', [False, True])
+def test_qsvm_refit_matches_fresh_estimator(replace_encoder):
+    y = np.array([0, 0, 1, 1])
+    X = np.array([[.1, .2], [.2, .3], [.7, .8], [.8, .9]])
+    model = QSVM(AngleEncoder())
+    model.fit(X, y)
+    old_qkm = model._qkm
+    if replace_encoder:
+        model.set_params(encoder=AmplitudeEncoder())
+    X_new = np.column_stack([X, [.3, .4, .9, 1.]])
+    model.fit(X_new, y)
+    fresh = QSVM(model.encoder).fit(X_new, y)
+    assert model._qkm is not old_qkm
+    np.testing.assert_array_equal(model.predict(X_new), fresh.predict(X_new))
+    np.testing.assert_allclose(model.decision_function(X_new), fresh.decision_function(X_new))
+
+
+def test_qsvm_failed_refit_preserves_fitted_model():
+    X = np.array([[.1, .2], [.2, .3], [.7, .8], [.8, .9]])
+    model = QSVM(AngleEncoder()).fit(X, [0, 0, 1, 1])
+    before = model.predict(X)
+    old_qkm, old_svm = model._qkm, model._svm
+    with pytest.raises(ValueError):
+        model.fit(np.column_stack([X, X[:, 0]]), [0, 0, 0, 0])
+    assert model._qkm is old_qkm and model._svm is old_svm
+    np.testing.assert_array_equal(model.predict(X), before)
+
+
 @pytest.mark.parametrize('gate,occurrences,expected', [('ry', 1, 2), ('ry', 2, 4), ('crx', 1, 8)])
 def test_parameter_shift_evaluation_cost(gate, occurrences, expected):
     from unittest.mock import patch

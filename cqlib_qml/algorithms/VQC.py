@@ -49,7 +49,7 @@ from cqlib_qml.loss import BCELoss, MSELoss, SoftmaxCrossEntropy
 from cqlib_qml.optimizer import OptimizerBase
 
 
-class VQC(BaseEstimator, ClassifierMixin):
+class VQC(ClassifierMixin, BaseEstimator):
     """
     Variational Quantum Classifier (VQC) with sklearn compatibility.
 
@@ -109,13 +109,13 @@ class VQC(BaseEstimator, ClassifierMixin):
     @property
     def classes_(self) -> np.ndarray:
         """Unique class labels from training data."""
-        check_is_fitted(self, "_classes")
+        check_is_fitted(self)
         return self._classes
 
     @property
     def n_features_in_(self) -> int:
         """Number of features in the training data."""
-        check_is_fitted(self, "_X_fit")
+        check_is_fitted(self)
         return self._X_fit.shape[1]
 
     def __init__(
@@ -146,13 +146,16 @@ class VQC(BaseEstimator, ClassifierMixin):
         Raises:
             ValueError: If loss type is incompatible with readouts.
         """
+        # Apply default readouts before validating loss compatibility
+        effective_readouts = readouts if readouts is not None else [0]
+
         # Validate loss-readouts compatibility
         if loss == "BCE":
-            if len(readouts) != 1:
-                raise ValueError(f"BCE loss requires exactly 1 readout, got {len(readouts)}.")
+            if len(effective_readouts) != 1:
+                raise ValueError(f"BCE loss requires exactly 1 readout, got {len(effective_readouts)}.")
         elif loss == "CrossEntropy":
-            if len(readouts) != n_classes:
-                raise ValueError(f"CrossEntropy loss requires {n_classes} readouts, " f"got {len(readouts)}.")
+            if len(effective_readouts) != n_classes:
+                raise ValueError(f"CrossEntropy loss requires {n_classes} readouts, " f"got {len(effective_readouts)}.")
         elif loss == "MSE":
             pass
         else:
@@ -160,7 +163,7 @@ class VQC(BaseEstimator, ClassifierMixin):
 
         self.ansatz = ansatz
         self.encoder = encoder
-        self.readouts = readouts or [0]
+        self.readouts = readouts
         self.loss = loss
         self.optimizer = optimizer
         self.n_classes = n_classes
@@ -172,6 +175,9 @@ class VQC(BaseEstimator, ClassifierMixin):
         self._loss_fn = None
         self._classes = None
         self._X_fit = None
+
+    def __sklearn_is_fitted__(self):
+        return self._qnn is not None and self._X_fit is not None
 
     def _get_loss_fn(self):
         """Get the appropriate loss function instance based on loss type."""
@@ -189,7 +195,7 @@ class VQC(BaseEstimator, ClassifierMixin):
         Returns:
             QNN: Configured Quantum Neural Network model.
         """
-        self.ansatz.set_measurement(readouts=self.readouts)
+        self.ansatz.set_measurement(readouts=self.readouts if self.readouts is not None else [0])
         return QNN(
             ansatz=self.ansatz,
             readouts=self.readouts,
@@ -302,14 +308,24 @@ class VQC(BaseEstimator, ClassifierMixin):
         Note:
             Training uses mini-batch gradient descent with the specified
             optimizer and loss function.
+            Verbose epoch loss is MSE averaged over samples and output elements,
+            BCE averaged over samples, or CrossEntropy averaged over samples.
 
         Examples:
             >>> vqc.fit(X_train, y_train)
         """
         X, y = check_X_y(X, y)
-        self._classes = np.unique(y)
-        if len(self._classes) != self.n_classes:
-            self.n_classes = len(self._classes)
+        classes, y = np.unique(y, return_inverse=True)
+        count = len(classes)
+        readouts = self.readouts if self.readouts is not None else [0]
+        if count < 2:
+            raise ValueError("Classification requires at least two classes.")
+        binary = self.loss == "BCE" or (self.loss == "MSE" and count == 2)
+        expected = 1 if binary else count
+        if (self.loss == "BCE" and count != 2) or len(readouts) != expected:
+            raise ValueError(f"Loss {self.loss} with {count} classes requires {expected} readouts and a compatible class count.")
+        self._classes = classes
+        self.n_classes = count
 
         self._qnn = self._create_qnn()
         self._loss_fn = self._get_loss_fn()
@@ -342,12 +358,20 @@ class VQC(BaseEstimator, ClassifierMixin):
                 loss = self._loss_fn(y_pred, y_true)
 
                 # Backward pass and optimization
-                self._qnn.backward(self._loss_fn.grads(-1))
+                prediction_derivative = 1.0
+                if self.loss == "BCE":
+                    prediction_derivative = -0.5
+                elif self.loss == "MSE" and expectations.shape[1] == 1:
+                    prediction_derivative = -1.0
+                self._qnn.backward(self._loss_fn.grads(prediction_derivative))
                 self._qnn.update(cur_loss=loss)
                 self._qnn.zero_grad()
 
+                # MSE/BCE return means; CE returns a sum. Weight batch means
+                # by sample count, including the final partial batch. Multiclass
+                # MSE remains an element mean, not a sum over output classes.
                 # Accumulate metrics
-                epoch_loss += loss * len(batch_circuits)
+                epoch_loss += loss if self.loss == "CrossEntropy" else loss * len(batch_circuits)
                 n_batches += 1
                 epoch_correct += self._compute_accuracy(expectations, batch_y) * len(batch_circuits)
 
@@ -372,22 +396,22 @@ class VQC(BaseEstimator, ClassifierMixin):
         Examples:
             >>> y_pred = vqc.predict(X_test)
         """
-        check_is_fitted(self, "_qnn")
+        check_is_fitted(self)
         X = check_array(X)
         circuits = self._encode(X)
         expectations = self._qnn.forward(circuits, trainable=False)
 
         if self.loss == "MSE":
             if self.n_classes > 2:
-                return expectations.argmax(axis=1)
+                return self._classes[expectations.argmax(axis=1)]
             else:
                 probabilities = (1 - expectations) / 2
-                return (probabilities.flatten() > 0.5).astype(int)
+                return self._classes[(probabilities.flatten() > 0.5).astype(int)]
         elif self.loss == "BCE":
             probabilities = (1 - expectations) / 2
-            return (probabilities.flatten() > 0.5).astype(int)
+            return self._classes[(probabilities.flatten() > 0.5).astype(int)]
         else:  # CrossEntropy
-            return expectations.argmax(axis=1)
+            return self._classes[expectations.argmax(axis=1)]
 
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
         """
@@ -402,7 +426,7 @@ class VQC(BaseEstimator, ClassifierMixin):
         Examples:
             >>> y_proba = vqc.predict_proba(X_test)
         """
-        check_is_fitted(self, "_qnn")
+        check_is_fitted(self)
         X = check_array(X)
         circuits = self._encode(X)
         expectations = self._qnn.forward(circuits, trainable=False)

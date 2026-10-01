@@ -63,3 +63,21 @@ def test_legacy_parameter_registration_does_not_create_unused_parameters():
     assert len(ansatz.parameters) == 0
     ansatz.ry(0, theta)
     assert list(map(str, ansatz.parameters)) == ['theta']
+
+
+@pytest.mark.parametrize('batch_size', [2, 5])
+def test_multiclass_mse_epoch_log_is_element_mean(monkeypatch, capsys, batch_size):
+    X = np.arange(5, dtype=float).reshape(-1, 1)
+    y = np.array([0, 1, 2, 0, 1])
+    predictions = np.array([[.1, .2, .3], [.4, .1, .2], [.3, .5, .7],
+                            [.9, .2, .1], [.2, .8, .4]])
+    qnn = Mock()
+    qnn.forward.side_effect = lambda circuits, trainable: predictions[np.asarray(circuits, dtype=int)]
+    model = VQC(HEAnsatz(3, d=1, layers=['RY', 'CX']), AngleEncoder(), readouts=[0, 1, 2], loss='MSE',
+                n_classes=3, epochs=1, batch_size=batch_size, verbose=True)
+    monkeypatch.setattr(model, '_create_qnn', lambda: qnn)
+    monkeypatch.setattr(model, '_encode', lambda data: data[:, 0].astype(int).tolist())
+    model.fit(X, y)
+    expected = np.mean((predictions - np.eye(3)[y]) ** 2)
+    assert f'loss: {expected:.4f}' in capsys.readouterr().out
+    assert qnn.backward.call_count == (len(X) + batch_size - 1) // batch_size

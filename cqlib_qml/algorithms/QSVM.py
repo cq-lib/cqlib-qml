@@ -39,7 +39,7 @@ from cqlib_qml.encoder import AmplitudeEncoder, AngleEncoder, ZZFeatureEncoder
 from cqlib_qml.algorithms.QKM import QKM
 
 
-class QSVM(BaseEstimator, ClassifierMixin):
+class QSVM(ClassifierMixin, BaseEstimator):
     """
     Quantum Support Vector Machine (QSVM).
 
@@ -89,13 +89,13 @@ class QSVM(BaseEstimator, ClassifierMixin):
     @property
     def n_support_(self) -> np.ndarray:
         """Number of support vectors for each class."""
-        check_is_fitted(self, "_svm")
+        check_is_fitted(self)
         return self._svm.n_support_
 
     @property
     def support_vectors_(self) -> np.ndarray:
         """Support vectors in original feature space."""
-        check_is_fitted(self, "_svm")
+        check_is_fitted(self)
         if self._X_fit is not None:
             return self._X_fit[self._svm.support_]
         return None
@@ -103,7 +103,7 @@ class QSVM(BaseEstimator, ClassifierMixin):
     @property
     def dual_coef_(self) -> np.ndarray:
         """Dual coefficients of the SVM."""
-        check_is_fitted(self, "_svm")
+        check_is_fitted(self)
         return self._svm.dual_coef_
 
     def __init__(
@@ -128,6 +128,26 @@ class QSVM(BaseEstimator, ClassifierMixin):
         self._qkm = None
         self._svm = None
         self._X_fit = None
+
+    def __sklearn_is_fitted__(self):
+        return self._svm is not None and self._X_fit is not None
+
+    def get_params(self, deep=True):
+        return {"encoder": self.encoder, "C": self.C,
+                "swap_test": self.swap_test, "probability": self.probability,
+                **self.svm_kwargs}
+
+    def set_params(self, **params):
+        valid = set(SVC().get_params()) - {"kernel", "C", "probability"}
+        for key, value in params.items():
+            if key in {"encoder", "C", "swap_test", "probability"}:
+                setattr(self, key, value)
+            elif key in valid:
+                self.svm_kwargs[key] = value
+            else:
+                raise ValueError(f"Invalid QSVM parameter: {key}")
+        self._qkm = None
+        return self
 
     def _get_qkm(self) -> QKM:
         """
@@ -168,15 +188,20 @@ class QSVM(BaseEstimator, ClassifierMixin):
         X, y = check_X_y(X, y)
 
         # Compute quantum kernel matrix
-        qkm = self._get_qkm()
+        qkm = QKM(encoder=self.encoder, swap_test=self.swap_test)
         K_train = qkm.kernel(X)
 
         # Initialize and train SVM with precomputed kernel
-        self._svm = SVC(kernel="precomputed", C=self.C, probability=self.probability, **self.svm_kwargs)
-        self._svm.fit(K_train, y)
+        options = dict(self.svm_kwargs)
+        if self.probability:
+            options["probability"] = True
+        svm = SVC(kernel="precomputed", C=self.C, **options)
+        svm.fit(K_train, y)
 
+        self._qkm = qkm
+        self._svm = svm
         self._X_fit = X
-        self.classes_ = self._svm.classes_
+        self.classes_ = svm.classes_
 
         return self
 
@@ -196,7 +221,7 @@ class QSVM(BaseEstimator, ClassifierMixin):
         Examples:
             >>> y_pred = qsvm.predict(X_test)
         """
-        check_is_fitted(self, "_svm")
+        check_is_fitted(self)
         X = check_array(X)
 
         qkm = self._get_qkm()
@@ -222,7 +247,7 @@ class QSVM(BaseEstimator, ClassifierMixin):
             >>> qsvm.fit(X_train, y_train)
             >>> y_proba = qsvm.predict_proba(X_test)
         """
-        check_is_fitted(self, "_svm")
+        check_is_fitted(self)
         X = check_array(X)
 
         if not self.probability:
@@ -246,7 +271,7 @@ class QSVM(BaseEstimator, ClassifierMixin):
         Examples:
             >>> scores = qsvm.decision_function(X_test)
         """
-        check_is_fitted(self, "_svm")
+        check_is_fitted(self)
         X = check_array(X)
 
         qkm = self._get_qkm()
