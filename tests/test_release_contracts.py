@@ -26,8 +26,24 @@ def ansatz():
     return circuit
 
 
+@pytest.mark.parametrize('labels,classes,expected', [
+    ([0, 1, 0, 1], [1, 0], [1, 0, 1, 0]),
+    ([10, 30, 20], [20, 10], [1, 0]),
+    (['cat', 'dog'], ['dog', 'cat'], [1, 0]),
+])
+def test_class_mapping_is_simultaneous(labels, classes, expected):
+    labels = np.array(labels)
+    original = labels.copy()
+    _, result = prep.filter_targets(np.arange(len(labels)), labels, classes)
+    np.testing.assert_array_equal(result, expected)
+    assert result.dtype.kind in 'iu'
+    np.testing.assert_array_equal(labels, original)
 
 
+@pytest.mark.parametrize('classes', [[], [0, 0]])
+def test_invalid_classes_rejected(classes):
+    with pytest.raises(ValueError):
+        prep.filter_targets(np.arange(2), np.array([0, 1]), classes)
 
 
 def test_configuration_values_affect_behavior():
@@ -159,8 +175,29 @@ def test_fixed_ansatz_forward():
     assert a.backward() == {}
 
 
+@pytest.mark.parametrize('image,levels', [([np.nan], 3), ([np.inf], 3), ([-.1], 3), ([1.1], 3), ([.5], 2.5), ([.5], True)])
+def test_invalid_grayscale_input(image, levels):
+    with pytest.raises((ValueError, TypeError)):
+        prep.change_grayscale(np.array(image), levels)
 
 
+@pytest.mark.parametrize('algorithm', ['QNN', 'HQNN'])
+def test_partial_validation_batch(algorithm):
+    module = __import__(f'cqlib_qml.algorithms.{algorithm}_classification', fromlist=['validate'])
+    class Perfect:
+        def forward(self, x, trainable=False):
+            if algorithm == 'QNN':
+                return -(2*x-1).reshape(-1, 1)
+            return np.eye(2)[x] * 2
+    y = np.array([0, 1, 0])
+    loader = DataLoader(Dataset(y, y), batch_size=2, shuffle=False, drop_last=False)
+    loss = MSELoss() if algorithm == 'QNN' else SoftmaxCrossEntropy()
+    average, accuracy = module.validate(0, Perfect(), loader, loss, 2)
+    assert accuracy == 1.
+    if algorithm == 'HQNN':
+        assert average == pytest.approx(np.log1p(np.exp(-2)))
+    with pytest.raises(ValueError):
+        module.validate(0, Perfect(), DataLoader(Dataset(y[:0], y[:0]), batch_size=2), loss, 2)
 
 
 @pytest.mark.parametrize('model_type', [QSVM, VQC])
@@ -183,10 +220,48 @@ def test_vqc_wrong_feature_count():
             method(np.array([[.1]]))
 
 
+def test_preprocess_validation_loader_keeps_all_samples(monkeypatch):
+    fake = type('MNIST', (), {'data': torch.tensor([[[0, 255], [255, 0]], [[255, 0], [0, 255]], [[255, 255], [0, 0]]], dtype=torch.uint8), 'targets': torch.tensor([0, 1, 0])})
+    monkeypatch.setattr(prep.datasets, 'MNIST', lambda **kwargs: fake())
+    _, loader = prep.get_mnist_dataloader([0, 1], (2, 2), FRQI(4), batch_size=2)
+    assert not loader._shuffle
+    assert sum(len(y) for _, y in loader) == 3
 
 
+@pytest.mark.parametrize('algorithm', ['QNN', 'HQNN'])
+def test_mnist_example_starts_without_tensorboard(algorithm, tmp_path, monkeypatch):
+    import cqlib_qml.models as models
+    class FakeModel:
+        def __init__(self, **kwargs):
+            pass
+        def forward(self, x, **kwargs):
+            raise RuntimeError('training reached')
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(models, algorithm, FakeModel)
+    monkeypatch.setattr(prep, 'get_mnist_dataloader', lambda *args: ([([None], np.array([0]))], []))
+    with patch.dict('sys.modules', {'torch.utils.tensorboard': None}):
+        with pytest.raises(RuntimeError, match='training reached'):
+            import importlib.util
+            source = Path(importlib.util.find_spec(f"cqlib_qml.algorithms.{algorithm}_classification").origin)
+            exec(compile(source.read_text(), str(source), 'exec'), {'__name__': '__main__'})
+    assert len(list(tmp_path.glob('*/config.yaml'))) == 1
 
 
+def test_tutorial_gradient_expressions():
+    root = Path(__file__).resolve().parents[1]
+    models = (root / 'docs/tutorials/models.md').read_text()
+    layer = (root / 'docs/tutorials/layer.md').read_text()
+    assert 'qnn.backward(loss_fn.grads(-0.5))' in models
+    assert 'dLdy = 2 * (output - target) / output.size' in layer
+    expectation, target = np.array([[.2], [-.4]]), np.array([[0.], [1.]])
+    loss = BCELoss()
+    loss((1-expectation)/2, target)
+    gradient = loss.grads(-.5)
+    for index in range(2):
+        delta = np.zeros_like(expectation)
+        delta[index] = 1e-6
+        numerical = (BCELoss()((1-expectation-delta)/2, target) - BCELoss()((1-expectation+delta)/2, target)) / 2e-6
+        assert gradient[index, 0] == pytest.approx(numerical)
 
 
 def test_import_does_not_patch_cqlib():
@@ -204,6 +279,23 @@ assert set(vars(ValueOperation)) == before
 
 
 
+def test_linear_tutorial_gradient_matches_finite_difference():
+    from textwrap import dedent
+    from cqlib_qml.layer import Linear
+    text = (Path(__file__).resolve().parents[1] / 'docs/tutorials/layer.md').read_text()
+    code = text.split('### 完整训练步骤', 1)[1].split('    # 5. 更新参数', 1)[0]
+    namespace = {'np': np, 'Linear': Linear}
+    exec(dedent(code), namespace)
+    layer, X, target = namespace['layer'], namespace['X'], namespace['target']
+    analytic = layer.gradients['W'].copy()
+    for index in [(0, 0), (2, 4), (4, 9)]:
+        original = layer.parameters['W'][index]
+        layer.parameters['W'][index] = original + 1e-6
+        positive = np.mean((layer.forward(X, retain_derived=False) - target)**2)
+        layer.parameters['W'][index] = original - 1e-6
+        negative = np.mean((layer.forward(X, retain_derived=False) - target)**2)
+        layer.parameters['W'][index] = original
+        assert analytic[index] == pytest.approx((positive-negative)/2e-6, abs=1e-9)
 
 
 def test_module_inference_invalidates_frozen_intermediate_state():

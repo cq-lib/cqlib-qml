@@ -200,7 +200,7 @@ $$f_{\text{QNN}}(x) = \langle 0 | U_{\text{enc}}(x)^\dagger U_{\text{ansatz}}(\b
         loss = loss_fn(y_pred, y_true)
 
         # 反向传播
-        qnn.backward(loss_fn.grads(-1))
+        qnn.backward(loss_fn.grads(-0.5))
 
         # 更新
         qnn.update()

@@ -167,6 +167,29 @@ def test_qkm_accepts_complex_amplitudes_and_single_samples():
     np.testing.assert_allclose(result, [[0.]], atol=1e-12)
 
 
+@pytest.mark.parametrize('hybrid', [False, True])
+def test_training_examples_pass_loss_to_king_scheduler(tmp_path, hybrid):
+    X, y = training_data()
+    circuits = AngleEncoder()(X)
+    scheduler = KingScheduler(patience=2)
+    optimizer = SGD(lr_scheduler=scheduler)
+    ansatz = HEAnsatz(2, 1, layers=['RY'])
+    params = np.full(len(ansatz.symbols), .2)
+    model = HQNN(ansatz, out_dim=2, params=params, optimizer=optimizer) if hybrid else QNN(
+        ansatz, readouts=[0], params=params, optimizer=optimizer)
+    module = importlib.import_module('cqlib_qml.algorithms.' + (
+        'HQNN_classification' if hybrid else 'QNN_classification'))
+    original = dict(ansatz._bindings)
+    losses = []
+    update = model.update
+    def record_update(*args, **kwargs):
+        losses.append(kwargs.get('cur_loss'))
+        return update(*args, **kwargs)
+    model.update = record_update
+    module.train(0, 0, model, [(circuits[:2], y[:2]), (circuits[2:], y[2:])],
+                 SoftmaxCrossEntropy() if hybrid else MSELoss(), str(tmp_path), 1)
+    assert len(losses) == 2 and all(np.isfinite(loss) for loss in losses)
+    assert ansatz._bindings != original
 
 
 @pytest.mark.parametrize('factory,grayscale,value', [
@@ -182,3 +205,20 @@ def test_single_pixel_qic_matches_normal_encoding(factory, grayscale, value):
         state.apply_circuit(circuit)
         states.append(state.data)
     np.testing.assert_allclose(abs(np.vdot(*states)) ** 2, 1., atol=1e-12)
+
+
+@pytest.mark.parametrize('batch_size', [-1, 0, 1.5, True, False, None])
+def test_dataloader_invalid_batch_size_fails_at_construction(batch_size):
+    with pytest.raises(ValueError, match='batch_size'):
+        DataLoader(Dataset(np.arange(4)), batch_size=batch_size)
+
+
+@pytest.mark.parametrize('batch_size', [1, 3, np.int64(3)])
+@pytest.mark.parametrize('drop_last', [False, True])
+def test_dataloader_valid_batch_sizes_preserve_tail(batch_size, drop_last):
+    loader = DataLoader(Dataset(np.arange(4)), batch_size=batch_size,
+                        shuffle=False, drop_last=drop_last)
+    batches = [batch[0] for batch in loader]
+    assert len(batches) == len(loader)
+    expected = 4 // batch_size * batch_size if drop_last else 4
+    np.testing.assert_array_equal(np.concatenate(batches), np.arange(expected))

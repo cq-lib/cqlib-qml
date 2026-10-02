@@ -176,7 +176,7 @@ $$W \sim \mathcal{U}(-1/\sqrt{d_{\text{in}}}, 1/\sqrt{d_{\text{in}}})$$
     loss = np.mean((output - target) ** 2)
 
     # 4. 反向传播
-    dLdy = 2 * (output - target) / len(X)
+    dLdy = 2 * (output - target) / output.size
     layer.backward(dLdy)
 
     # 5. 更新参数

@@ -62,15 +62,18 @@ def filter_targets(X: np.ndarray, Y: np.ndarray, classes: list) -> tuple:
         >>> print(np.unique(Y))
         [0, 1, 2]
     """
-    idx = Y == classes[0]
-    for i in range(1, len(classes)):
-        idx = idx | (Y == classes[i])
-    X, Y = (X[idx], Y[idx])
-    for i in range(len(Y)):
-        for j in range(len(classes)):
-            if Y[i] == classes[j]:
-                Y[i] = j
-    return X, Y
+    if not classes or len(set(classes)) != len(classes):
+        raise ValueError("classes must be nonempty and contain unique labels")
+    if len(X) != len(Y):
+        raise ValueError("Data and label lengths must match")
+    labels = Y.detach().cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
+    if labels.ndim != 1:
+        raise ValueError("Labels must be one-dimensional")
+    selected = np.isin(labels, classes)
+    mapping = {label: index for index, label in enumerate(classes)}
+    remapped = np.array([mapping[label] for label in labels[selected]], dtype=np.int64)
+    mask = torch.as_tensor(selected, device=X.device) if isinstance(X, torch.Tensor) else selected
+    return X[mask], remapped
 
 
 def downscale(X: np.ndarray, resize: tuple) -> np.ndarray:
@@ -176,10 +179,13 @@ def change_grayscale(X: np.ndarray, grayscale: int) -> np.ndarray:
         >>> print(np.unique(X_quantized))
         [0.0, 0.333, 0.667, 1.0]
     """
-    if grayscale < 2 or grayscale > 256:
+    if isinstance(grayscale, (bool, np.bool_)) or not isinstance(grayscale, (int, np.integer)):
+        raise ValueError("grayscale must be an integer between 2 and 256")
+    if not 2 <= grayscale <= 256:
         raise ValueError("grayscale should be between 2 and 256")
-
     X = np.asarray(X)
+    if X.dtype.kind not in "biuf" or not np.isfinite(X).all() or (X < 0).any() or (X > 1).any():
+        raise ValueError("Images must contain finite real pixels in [0, 1]")
     indices = np.minimum((X * grayscale).astype(int), grayscale - 1)
     return indices / (grayscale - 1)
 
@@ -304,6 +310,6 @@ def get_mnist_dataloader(classes: list, resize: tuple, encoding, batch_size: int
     train_dataset = Dataset(train_X, train_Y)
     test_dataset = Dataset(test_X, test_Y)
     train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
-    test_loader = DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
+    test_loader = DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=False, drop_last=False)
 
     return train_loader, test_loader

@@ -30,6 +30,8 @@ Examples:
     (array([1]), array([0]))
 """
 
+from numbers import Integral
+
 import numpy as np
 
 
@@ -206,13 +208,19 @@ class DataLoader:
 
         Args:
             dataset (Dataset): Dataset to load from.
-            batch_size (int, optional): Samples per batch. Defaults to 1.
+            batch_size (int, optional): Positive integer samples per batch.
+                NumPy integers are accepted; booleans are rejected. Defaults to 1.
             shuffle (bool, optional): Shuffle data each epoch. Defaults to True.
             drop_last (bool, optional): Drop incomplete batches. Defaults to True.
+
+        Raises:
+            ValueError: If batch_size is not a positive integer.
 
         Examples:
             >>> loader = DataLoader(dataset, batch_size=4, shuffle=False)
         """
+        if isinstance(batch_size, bool) or not isinstance(batch_size, Integral) or batch_size <= 0:
+            raise ValueError("batch_size must be a positive integer (not a boolean)")
         self._dataset = dataset
         self._shuffle = shuffle
         self._batch_size = batch_size

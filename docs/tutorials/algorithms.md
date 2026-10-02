@@ -849,3 +849,5 @@ model.load_checkpoint("./checkpoints/model.npy")
 `QSVM.fit(X, y, sample_weight=None)` 将样本权重传给 SVC，不接受其他训练关键字。VQC 的预测特征数必须等于训练时特征数。两个分类器拒绝未知 `set_params` 名称；配置改变后需要重新 fit。
 
 VQC 的 `epochs` 必须为正整数；`batch_size` 必须为正整数或 `None`（整批训练）。不接受布尔值、浮点数、零和负数。`fit()` 在创建 QNN、修改类别和参数前验证；`set_params()` 的非法训练配置也会直接报错，不修改已有配置或拟合状态。
+
+MNIST 示例独立创建输出目录，不依赖 TensorBoard。验证集固定顺序且保留最后一个不足批次；准确率以实际样本数为分母。验证损失按每样本均值报告：求和损失累计后除以总样本数，均值损失先按批次实际样本数加权。空验证集报错。

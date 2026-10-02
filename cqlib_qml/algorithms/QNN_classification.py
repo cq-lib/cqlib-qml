@@ -21,6 +21,7 @@ Examples:
 """
 
 import time
+from pathlib import Path
 import tqdm
 import yaml
 import numpy as np
@@ -91,7 +92,7 @@ def train(
 
         # Optimize
         net.backward(loss_fun.grads(-1))
-        net.update()
+        net.update(cur_loss=loss)
         net.zero_grad()
 
         # Compute accuracy
@@ -132,7 +133,8 @@ def validate(ep: int, net: QNN, test_loader, loss_fun, batch_size: int, tb: Opti
         >>> print(f"Validation: loss={avg_loss:.4f}, acc={avg_acc:.4f}")
     """
     loader_val = tqdm.tqdm(test_loader, desc="Validating epoch {}".format(ep + 1), leave=True)
-    loss_val_list = []
+    total_loss = 0.0
+    total_samples = 0
     total_correct = 0
 
     for it, (x_test, y_test) in enumerate(loader_val):
@@ -143,7 +145,9 @@ def validate(ep: int, net: QNN, test_loader, loss_fun, batch_size: int, tb: Opti
         y_pred_val = -expectations_val
 
         loss_val = loss_fun(y_pred_val, y_true_val)
-        loss_val_list.append(loss_val)
+        count = len(y_test)
+        total_samples += count
+        total_loss += loss_val if getattr(loss_fun, "reduction", "mean") == "sum" else loss_val * count
 
         correct_val = np.where(y_true_val * y_pred_val > 0)[0].shape[0]
         total_correct += correct_val
@@ -155,8 +159,10 @@ def validate(ep: int, net: QNN, test_loader, loss_fun, batch_size: int, tb: Opti
             accuracy="{:.3f}".format(accuracy_val),
         )
 
-    avg_loss = np.mean(loss_val_list)
-    avg_acc = total_correct / (len(loader_val) * batch_size)
+    if not total_samples:
+        raise ValueError("Validation dataset must not be empty")
+    avg_loss = total_loss / total_samples
+    avg_acc = total_correct / total_samples
 
     if tb is not None:
         tb.add_scalar("validation/loss", avg_loss, ep)
@@ -212,6 +218,7 @@ if __name__ == "__main__":
     # Setup logging
     now_time = time.strftime("%Y-%m-%d-%H_%M_%S", time.localtime(time.time()))
     model_path = "./QNN_MNIST_" + now_time + "/"
+    Path(model_path).mkdir(parents=True, exist_ok=True)
     tb = torch.utils.tensorboard.SummaryWriter(log_dir=model_path + "logs") if TENSORBOARD_AVAILABLE else None
 
     # Save configuration
@@ -225,16 +232,14 @@ if __name__ == "__main__":
         "loss_fun": str(loss_fun),
         "seed": SEED,
     }
-    config_file = open(model_path + "config.yaml", "w")
-    config_file.write(yaml.dump(config))
-    config_file.close()
+    with open(model_path + "config.yaml", "w") as config_file:
+        config_file.write(yaml.dump(config))
 
     # Training loop
     for ep in range(ep_start, EPOCH):
-        result_file = open(model_path + "result.yaml", "a")
         if ep > ep_start:
             it_start = 0
         train(ep, it_start, net, train_loader, loss_fun, model_path, EPOCH, tb)
         avg_loss, avg_acc = validate(ep, net, test_loader, loss_fun, BATCH_SIZE, tb)
-        result_file.write("Validation Average Loss: {}, Accuracy: {}\n".format(avg_loss, avg_acc))
-        result_file.close()
+        with open(model_path + "result.yaml", "a") as result_file:
+            result_file.write("Validation Average Loss: {}, Accuracy: {}\n".format(avg_loss, avg_acc))
