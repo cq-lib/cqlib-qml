@@ -59,9 +59,6 @@ coverage.xml
 # Sphinx documentation
 docs/_build/
 
-# Generated API documentation (pdoc HTML)
-docs/api/
-
 # PyCharm
 .idea/
 

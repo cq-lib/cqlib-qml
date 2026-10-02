@@ -243,14 +243,14 @@ def test_mnist_example_starts_without_tensorboard(algorithm, tmp_path, monkeypat
         with pytest.raises(RuntimeError, match='training reached'):
             import importlib.util
             source = Path(importlib.util.find_spec(f"cqlib_qml.algorithms.{algorithm}_classification").origin)
-            exec(compile(source.read_text(), str(source), 'exec'), {'__name__': '__main__'})
+            exec(compile(source.read_text(encoding='utf-8'), str(source), 'exec'), {'__name__': '__main__'})
     assert len(list(tmp_path.glob('*/config.yaml'))) == 1
 
 
 def test_tutorial_gradient_expressions():
     root = Path(__file__).resolve().parents[1]
-    models = (root / 'docs/tutorials/models.md').read_text()
-    layer = (root / 'docs/tutorials/layer.md').read_text()
+    models = (root / 'docs/tutorials/models.md').read_text(encoding='utf-8')
+    layer = (root / 'docs/tutorials/layer.md').read_text(encoding='utf-8')
     assert 'qnn.backward(loss_fn.grads(-0.5))' in models
     assert 'dLdy = 2 * (output - target) / output.size' in layer
     expectation, target = np.array([[.2], [-.4]]), np.array([[0.], [1.]])
@@ -277,7 +277,7 @@ assert set(vars(ValueOperation)) == before
 
 def test_sdist_manifest_includes_release_sources():
     root = Path(__file__).resolve().parents[1]
-    manifest = (root / 'MANIFEST.in').read_text()
+    manifest = (root / 'MANIFEST.in').read_text(encoding='utf-8')
     assert 'recursive-include docs/tutorials *.md' in manifest
     assert 'recursive-include scripts *.py *.sh' in manifest
 
@@ -286,6 +286,8 @@ def test_release_gate_requires_pytest(tmp_path):
     import os
     import shutil
     import subprocess
+    if os.name != 'posix':
+        pytest.skip('release wrapper requires POSIX shell execution; wheel validation is portable')
     if shutil.which('bash') is None:
         pytest.skip('bash release wrapper requires bash; wheel validation is portable')
     root = Path(__file__).resolve().parents[1]
@@ -304,7 +306,7 @@ def test_release_gate_requires_pytest(tmp_path):
 def test_linear_tutorial_gradient_matches_finite_difference():
     from textwrap import dedent
     from cqlib_qml.layer import Linear
-    text = (Path(__file__).resolve().parents[1] / 'docs/tutorials/layer.md').read_text()
+    text = (Path(__file__).resolve().parents[1] / 'docs/tutorials/layer.md').read_text(encoding='utf-8')
     code = text.split('### 完整训练步骤', 1)[1].split('    # 5. 更新参数', 1)[0]
     namespace = {'np': np, 'Linear': Linear}
     exec(dedent(code), namespace)
