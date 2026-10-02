@@ -68,10 +68,11 @@
         def forward(self, x, **kwargs):
             if not self._init:
                 self.init_params()
+            self._X = x
             return x @ self._parameters["W"]
 
         def backward(self, out, **kwargs):
-            self._gradients["W"] = out.T @ self._X
+            self._gradients["W"] = self._X.T @ out
             return out @ self._parameters["W"].T
 
 ---
@@ -175,7 +176,7 @@ $$W \sim \mathcal{U}(-1/\sqrt{d_{\text{in}}}, 1/\sqrt{d_{\text{in}}})$$
     loss = np.mean((output - target) ** 2)
 
     # 4. 反向传播
-    dLdy = 2 * (output - target) / len(X)
+    dLdy = 2 * (output - target) / output.size
     layer.backward(dLdy)
 
     # 5. 更新参数

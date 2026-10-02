@@ -42,6 +42,7 @@ from cqlib_qml.ansatz import *
 from cqlib_qml.encoder import *
 from cqlib_qml.layer import *
 from cqlib_qml.models import Module
+from .QNN import validate_initial_params
 from cqlib_qml.loss import *
 from cqlib_qml.optimizer import *
 
@@ -63,6 +64,9 @@ class HQNN(Module):
         ansatz (HEAnsatz): The quantum circuit ansatz. Must be an
             HEAnsatz instance.
         out_dim (int): Number of output dimensions.
+        readouts (list, optional): Qubit indices to measure.
+            If None, uses the ansatz's existing readouts, or all qubits
+            if the ansatz has none. Defaults to None.
         params (np.ndarray, optional): Initial parameters for the ansatz.
             Defaults to None.
         optimizer (Union[str, dict, OptimizerBase], optional): The optimizer
@@ -98,6 +102,8 @@ class HQNN(Module):
         out_dim: int,
         params: np.ndarray = None,
         optimizer: Union[str, dict, OptimizerBase] = "adam",
+        *,
+        readouts: list = None,
     ):
         """
         Initialize an HQNN model.
@@ -105,6 +111,7 @@ class HQNN(Module):
         Args:
             ansatz (HEAnsatz): The quantum circuit ansatz.
             out_dim (int): Number of output dimensions.
+            readouts (list, optional): Readout qubits. Defaults to None.
             params (np.ndarray, optional): Initial parameters. Defaults to None.
             optimizer (Union[str, dict, OptimizerBase]): Optimizer. Defaults to "adam".
 
@@ -116,10 +123,13 @@ class HQNN(Module):
         self._ansatz = ansatz
         n_qubits = self._ansatz.num_qubits
         if params is not None:
+            params = validate_initial_params(ansatz, params)
             bindings = dict(zip(ansatz.symbols, params))
             self._ansatz.assign_parameters(bindings)
-        self._ansatz.set_measurement(readouts=list(range(n_qubits)))
-        self._linear = Linear(n_qubits, out_dim)
+        if readouts is None:
+            readouts = self._ansatz.readouts if self._ansatz.readouts is not None else list(range(n_qubits))
+        self._ansatz.set_measurement(readouts=readouts)
+        self._linear = Linear(len(readouts), out_dim)
         super(HQNN, self).__init__(self._ansatz, self._linear)
         self.set_optimizer(optimizer)
 
@@ -135,8 +145,10 @@ class HQNN(Module):
             data_circuits (Union[Circuit, List[Circuit]]): Data circuits
                 after encoding. Can be a single Circuit or a list.
             trainable (bool, optional): Whether to enable training mode.
-                If True, gradients will be computed. If False, the model
-                is in inference mode. Defaults to True.
+                If True, retains training state while respecting freeze().
+                If False, clears old gradients and backward caches before
+                validating inputs, even if the call fails. Freeze status is
+                unchanged. Defaults to True.
 
         Returns:
             np.ndarray: Output from the classical linear layer.
@@ -152,10 +164,8 @@ class HQNN(Module):
             >>> # Get predictions (for classification)
             >>> predictions = np.argmax(output, axis=1)
         """
+        if not trainable:
+            self._invalidate_gradients()
         self._ansatz.add_encoder(data_circuits)
-        if trainable:
-            self._ansatz.unfreeze()
-        else:
-            self._ansatz.freeze()
-        expections = super().forward()
+        expections = super().forward(retain_derived=trainable)
         return expections

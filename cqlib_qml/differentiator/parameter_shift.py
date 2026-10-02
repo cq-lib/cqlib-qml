@@ -14,7 +14,7 @@ References:
 
 Examples:
     >>> from cqlib_qml.differentiator import ParameterShiftDifferentiator
-    >>> from cqlib.circuit import Circuit, Parameter
+    >>> from cqlib.circuit import Circuit, Parameter, ValueOperation
     >>> from cqlib.qis import Hamiltonian, PauliString
     >>>
     >>> # Setup circuit
@@ -36,7 +36,7 @@ Examples:
 import numpy as np
 from typing import List, Dict, Union, Optional
 
-from cqlib.circuit import Circuit, Parameter
+from cqlib.circuit import Circuit, Parameter, ValueOperation
 from cqlib.qis import Hamiltonian, PauliString
 from cqlib.qis.state import Statevector
 
@@ -49,10 +49,14 @@ class ParameterShiftDifferentiator:
     ∂f/∂θ = (f(θ + s) - f(θ - s)) / (2 * sin(s))
 
     where s is the shift amount (default π/2). This rule applies to
-    gates of the form exp(-i θ G / 2) where G² = I.
+    gates of the form exp(-i θ G / 2) where G² = I. Other standard and
+    controlled gates use a generalized Fourier shift rule. Arguments are
+    shifted per gate occurrence and expression derivatives apply the chain
+    rule, including when multiple gates share a symbol.
 
     This method is hardware-friendly as it requires only circuit
-    evaluations, making it suitable for running on quantum devices.
+    evaluations. The current implementation uses Statevector and does not
+    expose hardware executors, shots or measurement statistics.
 
     Args:
         shift: The shift amount in radians. Default is π/2.
@@ -105,12 +109,13 @@ class ParameterShiftDifferentiator:
         bindings: Dict[Union[str, Parameter], float],
         readouts: Optional[List[int]] = None,
         hamiltonians: Optional[List[Hamiltonian]] = None,
+        initial_state: Optional[np.ndarray] = None,
     ) -> Dict[str, np.ndarray]:
         """
         Calculate gradients using the parameter shift rule.
 
-        For each parameter, the gradient is computed by evaluating the
-        circuit at θ + s and θ - s, where s is the shift amount.
+        Each parameterized gate argument is shifted independently. Its
+        contribution is accumulated for every symbol in that expression.
 
         Args:
             circuit (Circuit): Parameterized quantum circuit.
@@ -120,6 +125,7 @@ class ParameterShiftDifferentiator:
             readouts (List[int], optional): Qubit indices for Pauli-Z
                 measurements. Either readouts or hamiltonians must be
                 provided. Defaults to None.
+            initial_state (np.ndarray, optional): State before the input circuit.
             hamiltonians (List[Hamiltonian], optional): Observables for
                 expectation computation. Either readouts or hamiltonians
                 must be provided. Defaults to None.
@@ -140,6 +146,11 @@ class ParameterShiftDifferentiator:
             >>> # Using Hamiltonians
             >>> grads = diff.run(circuit, {"theta": 0.5}, hamiltonians=[ham])
         """
+        if initial_state is not None:
+            initial_state = np.asarray(initial_state, dtype=np.complex128)
+            if initial_state.shape != (1 << circuit.num_qubits,):
+                raise ValueError("Initial state dimension does not match the circuit.")
+        bindings = {str(key): value for key, value in bindings.items()}
         circuit = circuit.decompose()
         if len(circuit.parameters) == 0:
             raise ValueError("The input circuit must be a parameterized quantum circuit.")
@@ -163,11 +174,12 @@ class ParameterShiftDifferentiator:
                 hamiltonians.append(ham)
         hamiltonians = self._check_hamiltonians(hamiltonians)
 
-        gradients = self._run(circuit, bindings, hamiltonians)
+        gradients = self._run(circuit, bindings, hamiltonians, initial_state)
         return gradients
 
     def _run(
-        self, circuit: Circuit, bindings: Dict[Union[str, Parameter], float], hamiltonians: List[Hamiltonian]
+        self, circuit: Circuit, bindings: Dict[Union[str, Parameter], float], hamiltonians: List[Hamiltonian],
+        initial_state: Optional[np.ndarray] = None,
     ) -> Dict[str, np.ndarray]:
         """
         Internal method for parameter shift gradient computation.
@@ -180,47 +192,46 @@ class ParameterShiftDifferentiator:
         Returns:
             Dict[str, np.ndarray]: Gradient dictionary.
         """
-        gradients = dict()
-        base_vals = [bindings[symbol] for symbol in circuit.symbols]
-        for i in range(len(circuit.symbols)):
-            # Evaluate at θ + shift
-            pos_vals = base_vals.copy()
-            pos_vals[i] += self._shift
-            pos_exps = self._compute_expectations(circuit, pos_vals, hamiltonians)
-            # Evaluate at θ - shift
-            neg_vals = base_vals.copy()
-            neg_vals[i] -= self._shift
-            neg_exps = self._compute_expectations(circuit, neg_vals, hamiltonians)
-            # Apply parameter shift rule
-            gradients[circuit.symbols[i]] = (pos_exps - neg_exps) / (2.0 * np.sin(self._shift))
+        gradients = {symbol: np.zeros(len(hamiltonians)) for symbol in circuit.symbols}
+        assigned = circuit.assign_parameters(bindings)
+        operations = list(assigned.operations)
+        # Gate expectations have frequencies among 1/2, 1, 3/2 and 2.
+        # Solve the generalized shift rule, avoiding assumptions about shared
+        # symbols or the spectrum of controlled/phase-dependent gates.
+        shifts = np.arange(1, 5) * np.pi / 4
+        frequencies = np.arange(1, 5) / 2
+        weights = np.linalg.solve(2 * np.sin(frequencies[:, None] * shifts), frequencies)
+        for gate_index, original in enumerate(circuit.operations):
+            for param_index, expression in enumerate(original.params):
+                if not isinstance(expression, Parameter) or not expression.symbols:
+                    continue
+                if not (original.instruction.is_standard or original.instruction.is_mcgate):
+                    raise ValueError("Parameterized custom instructions do not support parameter shift")
+                name = str(original.instruction.standard_gate).split(".")[-1].split("(")[0]
+                if name in {"RX", "RY", "RZ", "RXX", "RYY", "RZZ", "RZX", "Phase", "U"}:
+                    gate_shifts = [self._shift]
+                    gate_weights = [1 / (2 * np.sin(self._shift))]
+                else:
+                    gate_shifts, gate_weights = shifts, weights
+                gate_grad = np.zeros(len(hamiltonians))
+                for shift, weight in zip(gate_shifts, gate_weights):
+                    values = []
+                    for sign in (1, -1):
+                        params = list(operations[gate_index].params)
+                        params[param_index] += sign * shift
+                        shifted = Circuit(circuit.num_qubits)
+                        for index, op in enumerate(operations):
+                            shifted.append(ValueOperation(op.instruction, op.qubits, params)
+                                           if index == gate_index else op)
+                        state = (Statevector(circuit.num_qubits) if initial_state is None else
+                                 Statevector.from_state(circuit.num_qubits, initial_state))
+                        state.apply_circuit(shifted)
+                        values.append(np.array([ham.expectation_statevector(state) for ham in hamiltonians]))
+                    gate_grad += weight * (values[0] - values[1])
+                for symbol in expression.symbols:
+                    gradients[symbol] += expression.derivative(symbol).evaluate(bindings) * gate_grad
 
         return gradients
-
-    def _compute_expectations(
-        self, circuit: Circuit, parameters: np.ndarray, hamiltonians: List[Hamiltonian]
-    ) -> np.ndarray:
-        """
-        Compute expectation values for all Hamiltonians.
-
-        Args:
-            circuit (Circuit): Quantum circuit.
-            parameters (np.ndarray): Parameter values.
-            hamiltonians (List[Hamiltonian]): Observables.
-
-        Returns:
-            np.ndarray: Array of expectation values.
-        """
-        n_qubits = circuit.num_qubits
-        bindings = dict(zip(circuit.symbols, parameters))
-        assigned_cir = circuit.assign_parameters(bindings)
-        state = Statevector(n_qubits)
-        state.apply_circuit(assigned_cir)
-        expectations = []
-        for ham in hamiltonians:
-            expectation = ham.expectation_statevector(state)
-            expectations.append(expectation)
-
-        return np.array(expectations)
 
     def _check_hamiltonians(self, hams) -> List[Hamiltonian]:
         """
@@ -239,7 +250,6 @@ class ParameterShiftDifferentiator:
             hams = [hams]
         if isinstance(hams, list):
             for i in range(len(hams)):
-                hams[i].simplify()
                 if not isinstance(hams[i], Hamiltonian):
                     raise TypeError(f"Expected Hamiltonian, got {type(hams[i]).__name__}")
         else:

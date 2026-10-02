@@ -35,7 +35,11 @@ Examples:
     >>> accuracy = vqc.score(X_test, y_test)
 """
 
+from cqlib_qml._configuration import same_parameter_value
+
 import numpy as np
+from numbers import Integral
+from copy import copy, deepcopy
 from typing import Union, Optional, List, Dict, Any
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
@@ -49,7 +53,7 @@ from cqlib_qml.loss import BCELoss, MSELoss, SoftmaxCrossEntropy
 from cqlib_qml.optimizer import OptimizerBase
 
 
-class VQC(BaseEstimator, ClassifierMixin):
+class VQC(ClassifierMixin, BaseEstimator):
     """
     Variational Quantum Classifier (VQC) with sklearn compatibility.
 
@@ -68,8 +72,8 @@ class VQC(BaseEstimator, ClassifierMixin):
         optimizer (Union[str, dict, OptimizerBase]): Optimizer for training.
             Defaults to "adam".
         n_classes (int): Number of output classes. Defaults to 2.
-        epochs (int): Number of training epochs. Defaults to 100.
-        batch_size (int, optional): Batch size for training. If None, uses full batch.
+        epochs (int): Positive number of training epochs. Defaults to 100.
+        batch_size (int, optional): Positive batch size. If None, uses full batch.
             Defaults to None.
         verbose (bool): Whether to print training progress. Defaults to True.
 
@@ -109,13 +113,13 @@ class VQC(BaseEstimator, ClassifierMixin):
     @property
     def classes_(self) -> np.ndarray:
         """Unique class labels from training data."""
-        check_is_fitted(self, "_classes")
+        check_is_fitted(self)
         return self._classes
 
     @property
     def n_features_in_(self) -> int:
         """Number of features in the training data."""
-        check_is_fitted(self, "_X_fit")
+        check_is_fitted(self)
         return self._X_fit.shape[1]
 
     def __init__(
@@ -146,21 +150,11 @@ class VQC(BaseEstimator, ClassifierMixin):
         Raises:
             ValueError: If loss type is incompatible with readouts.
         """
-        # Validate loss-readouts compatibility
-        if loss == "BCE":
-            if len(readouts) != 1:
-                raise ValueError(f"BCE loss requires exactly 1 readout, got {len(readouts)}.")
-        elif loss == "CrossEntropy":
-            if len(readouts) != n_classes:
-                raise ValueError(f"CrossEntropy loss requires {n_classes} readouts, " f"got {len(readouts)}.")
-        elif loss == "MSE":
-            pass
-        else:
-            raise ValueError(f"Unsupported loss: {loss}. Supported losses: 'MSE', 'BCE', 'CrossEntropy'.")
+        self._validate_loss_config(loss, readouts, n_classes)
 
         self.ansatz = ansatz
         self.encoder = encoder
-        self.readouts = readouts or [0]
+        self.readouts = readouts
         self.loss = loss
         self.optimizer = optimizer
         self.n_classes = n_classes
@@ -173,14 +167,39 @@ class VQC(BaseEstimator, ClassifierMixin):
         self._classes = None
         self._X_fit = None
 
+    def __sklearn_is_fitted__(self):
+        return self._qnn is not None and self._X_fit is not None
+
+    @staticmethod
+    def _validate_loss_config(loss, readouts, n_classes):
+        """Validate the complete proposed configuration before publishing it."""
+        if loss not in ('MSE', 'BCE', 'CrossEntropy'):
+            raise ValueError(f"Unsupported loss: {loss}. Supported losses: 'MSE', 'BCE', 'CrossEntropy'.")
+        effective_readouts = readouts if readouts is not None else [0]
+        if loss == 'BCE' and len(effective_readouts) != 1:
+            raise ValueError(f"BCE loss requires exactly 1 readout, got {len(effective_readouts)}.")
+        if loss == 'CrossEntropy' and len(effective_readouts) != n_classes:
+            raise ValueError(f"CrossEntropy loss requires {n_classes} readouts, got {len(effective_readouts)}.")
+
+    @staticmethod
+    def _validate_training_config(epochs, batch_size):
+        """Reject invalid loop bounds before changing any fitted state."""
+        for name, value in [('epochs', epochs), ('batch_size', batch_size)]:
+            if name == 'batch_size' and value is None:
+                continue
+            if isinstance(value, bool) or not isinstance(value, Integral) or value <= 0:
+                raise ValueError(f"{name} must be a positive integer"
+                                 + (" or None" if name == 'batch_size' else ""))
+
     def _get_loss_fn(self):
         """Get the appropriate loss function instance based on loss type."""
         if self.loss == "MSE":
             return MSELoss()
         elif self.loss == "BCE":
             return BCELoss()
-        else:
+        elif self.loss == 'CrossEntropy':
             return SoftmaxCrossEntropy()
+        raise ValueError(f"Unsupported loss: {self.loss}")
 
     def _create_qnn(self) -> QNN:
         """
@@ -189,7 +208,7 @@ class VQC(BaseEstimator, ClassifierMixin):
         Returns:
             QNN: Configured Quantum Neural Network model.
         """
-        self.ansatz.set_measurement(readouts=self.readouts)
+        self.ansatz.set_measurement(readouts=self.readouts if self.readouts is not None else [0])
         return QNN(
             ansatz=self.ansatz,
             readouts=self.readouts,
@@ -299,24 +318,72 @@ class VQC(BaseEstimator, ClassifierMixin):
         Returns:
             VQC: The fitted VQC instance.
 
+        Raises:
+            ValueError: If epochs or batch_size is not a positive integer.
+                Only batch_size accepts None for full-batch training. Booleans
+                are not accepted. Validation precedes changes to fitted state.
+
         Note:
             Training uses mini-batch gradient descent with the specified
             optimizer and loss function.
+            Fitting is staged on private copies. A failed fit preserves the
+            last successful model, labels, parameters and optimizer state.
+            Verbose epoch loss is MSE averaged over samples and output elements,
+            BCE averaged over samples, or CrossEntropy averaged over samples.
 
         Examples:
             >>> vqc.fit(X_train, y_train)
         """
+        self._validate_training_config(self.epochs, self.batch_size)
+        self._validate_loss_config(self.loss, self.readouts, self.n_classes)
+        candidate = copy(self)
+        # Native Hamiltonians cannot be pickled; training only reads them.
+        memo = {id(ham): ham for ham in (getattr(self.ansatz, '_hams', None) or [])}
+        candidate.ansatz = deepcopy(self.ansatz, memo)
+        candidate.encoder = deepcopy(self.encoder)
+        candidate.optimizer = deepcopy(self.optimizer)
+        candidate._fit_in_place(X, y)
+
+        # Publish only after every encoding and training step succeeds. Keep
+        # user-supplied object references connected to the trained model.
+        if isinstance(self.optimizer, OptimizerBase):
+            self.optimizer.__dict__.clear()
+            self.optimizer.__dict__.update(candidate.ansatz._optimizer.__dict__)
+            candidate.ansatz._optimizer = self.optimizer
+        self.ansatz.__dict__.clear()
+        self.ansatz.__dict__.update(candidate.ansatz.__dict__)
+        self.encoder.__dict__.clear()
+        self.encoder.__dict__.update(candidate.encoder.__dict__)
+        candidate._qnn._ansatz = self.ansatz
+        candidate._qnn._nets[0] = self.ansatz
+        self._qnn = candidate._qnn
+        self._loss_fn = candidate._loss_fn
+        self._classes = candidate._classes
+        self._X_fit = candidate._X_fit
+        self.n_classes = candidate.n_classes
+        return self
+
+    def _fit_in_place(self, X, y):
+        """Fit a private candidate; only fit() publishes its resulting state."""
         X, y = check_X_y(X, y)
-        self._classes = np.unique(y)
-        if len(self._classes) != self.n_classes:
-            self.n_classes = len(self._classes)
+        classes, y = np.unique(y, return_inverse=True)
+        count = len(classes)
+        readouts = self.readouts if self.readouts is not None else [0]
+        if count < 2:
+            raise ValueError("Classification requires at least two classes.")
+        binary = self.loss == "BCE" or (self.loss == "MSE" and count == 2)
+        expected = 1 if binary else count
+        if (self.loss == "BCE" and count != 2) or len(readouts) != expected:
+            raise ValueError(f"Loss {self.loss} with {count} classes requires {expected} readouts and a compatible class count.")
+        self._classes = classes
+        self.n_classes = count
 
         self._qnn = self._create_qnn()
         self._loss_fn = self._get_loss_fn()
 
         circuits = self._encode(X)
         n_samples = len(X)
-        batch_size = self.batch_size or n_samples
+        batch_size = n_samples if self.batch_size is None else self.batch_size
 
         for epoch in range(self.epochs):
             # Shuffle data for each epoch
@@ -342,12 +409,20 @@ class VQC(BaseEstimator, ClassifierMixin):
                 loss = self._loss_fn(y_pred, y_true)
 
                 # Backward pass and optimization
-                self._qnn.backward(self._loss_fn.grads(-1))
+                prediction_derivative = 1.0
+                if self.loss == "BCE":
+                    prediction_derivative = -0.5
+                elif self.loss == "MSE" and expectations.shape[1] == 1:
+                    prediction_derivative = -1.0
+                self._qnn.backward(self._loss_fn.grads(prediction_derivative))
                 self._qnn.update(cur_loss=loss)
                 self._qnn.zero_grad()
 
+                # MSE/BCE return means; CE returns a sum. Weight batch means
+                # by sample count, including the final partial batch. Multiclass
+                # MSE remains an element mean, not a sum over output classes.
                 # Accumulate metrics
-                epoch_loss += loss * len(batch_circuits)
+                epoch_loss += loss if self.loss == "CrossEntropy" else loss * len(batch_circuits)
                 n_batches += 1
                 epoch_correct += self._compute_accuracy(expectations, batch_y) * len(batch_circuits)
 
@@ -372,22 +447,24 @@ class VQC(BaseEstimator, ClassifierMixin):
         Examples:
             >>> y_pred = vqc.predict(X_test)
         """
-        check_is_fitted(self, "_qnn")
+        check_is_fitted(self)
         X = check_array(X)
+        if X.shape[1] != self.n_features_in_:
+            raise ValueError(f"Expected {self.n_features_in_} features, got {X.shape[1]}")
         circuits = self._encode(X)
         expectations = self._qnn.forward(circuits, trainable=False)
 
         if self.loss == "MSE":
             if self.n_classes > 2:
-                return expectations.argmax(axis=1)
+                return self._classes[expectations.argmax(axis=1)]
             else:
                 probabilities = (1 - expectations) / 2
-                return (probabilities.flatten() > 0.5).astype(int)
+                return self._classes[(probabilities.flatten() > 0.5).astype(int)]
         elif self.loss == "BCE":
             probabilities = (1 - expectations) / 2
-            return (probabilities.flatten() > 0.5).astype(int)
+            return self._classes[(probabilities.flatten() > 0.5).astype(int)]
         else:  # CrossEntropy
-            return expectations.argmax(axis=1)
+            return self._classes[expectations.argmax(axis=1)]
 
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
         """
@@ -402,8 +479,10 @@ class VQC(BaseEstimator, ClassifierMixin):
         Examples:
             >>> y_proba = vqc.predict_proba(X_test)
         """
-        check_is_fitted(self, "_qnn")
+        check_is_fitted(self)
         X = check_array(X)
+        if X.shape[1] != self.n_features_in_:
+            raise ValueError(f"Expected {self.n_features_in_} features, got {X.shape[1]}")
         circuits = self._encode(X)
         expectations = self._qnn.forward(circuits, trainable=False)
 
@@ -482,7 +561,18 @@ class VQC(BaseEstimator, ClassifierMixin):
         Examples:
             >>> vqc.set_params(epochs=200, batch_size=64)
         """
+        unknown = set(params) - set(self.get_params(deep=False))
+        if unknown:
+            raise ValueError(f"Invalid VQC parameters: {sorted(unknown)}")
+        self._validate_training_config(params.get('epochs', self.epochs),
+                                       params.get('batch_size', self.batch_size))
+        self._validate_loss_config(params.get('loss', self.loss),
+                                   params.get('readouts', self.readouts),
+                                   params.get('n_classes', self.n_classes))
+        changed = False
         for key, value in params.items():
-            if hasattr(self, key):
-                setattr(self, key, value)
+            changed = changed or not same_parameter_value(getattr(self, key), value)
+            setattr(self, key, value)
+        if changed:
+            self._qnn = self._loss_fn = self._classes = self._X_fit = None
         return self

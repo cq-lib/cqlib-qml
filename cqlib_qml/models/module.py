@@ -93,7 +93,7 @@ class Module:
         """
         self._nets = self._validate_nets(list(args))
 
-    def forward(self, x=None):
+    def forward(self, x=None, *, retain_derived=True):
         """
         Perform forward propagation through the module.
 
@@ -102,6 +102,8 @@ class Module:
 
         Args:
             x (np.ndarray, optional): Input data. Defaults to None.
+            retain_derived (bool): Keep training state. False clears old gradients
+                and caches; it does not change component freeze status.
 
         Returns:
             np.ndarray: Output of the last component in the module.
@@ -113,10 +115,29 @@ class Module:
             >>> # For ansatz-only models (no input needed)
             >>> output = model.forward()
         """
+        if not retain_derived:
+            self._invalidate_gradients()
+        else:
+            self._forward_valid = False
         x_in = x
         for net in self._nets:
-            x_in = net.forward(x_in)
+            if retain_derived:
+                x_in = net.forward(x_in)
+            else:
+                from inspect import signature
+                if "retain_derived" in signature(net.forward).parameters:
+                    x_in = net.forward(x_in, retain_derived=False)
+                else:
+                    x_in = net.forward(x_in)
+                net._invalidate_gradients()
+        self._forward_valid = retain_derived
         return x_in
+
+    def _invalidate_gradients(self):
+        """Discard every component's training state, including frozen ones."""
+        self._forward_valid = False
+        for net in self._nets:
+            net._invalidate_gradients()
 
     def backward(self, dLdout=None):
         """
@@ -142,12 +163,16 @@ class Module:
             >>> dLdout = loss_fn.grads()
             >>> grad = model.backward(dLdout)
         """
+        if not getattr(self, "_forward_valid", False):
+            raise ValueError("Run a training forward before backward")
         for net in self._nets[::-1]:
-            if net.trainable:
-                if not isinstance(net, Ansatz):
-                    if dLdout is None:
-                        raise ValueError("Classical layers must pass in gradients.")
-                dLdout = net.backward(dLdout)
+            if isinstance(net, Ansatz) and not net.trainable and net.updatable:
+                continue  # Frozen quantum source has no classical input gradient.
+            if not isinstance(net, Ansatz) and dLdout is None:
+                raise ValueError("Classical layers must pass in gradients.")
+            dLdout = net.backward(dLdout)
+            if isinstance(net, Layer):
+                net._inference_invalidated = False
         return dLdout
 
     def random_init(self) -> None:
@@ -213,6 +238,8 @@ class Module:
             >>> model.update()
             >>> model.update(cur_loss=0.5)
         """
+        if not getattr(self, "_forward_valid", False):
+            return
         for net in self._nets:
             if net.trainable and net.updatable:
                 net.update(cur_loss)
@@ -242,7 +269,9 @@ class Module:
                 key = "ansatz{}".format(i)
             else:
                 key = "layer{}".format(i)
-            module_info[key] = self._nets[i].summary
+            summary = self._nets[i].summary
+            # Layer.summary is a method, Ansatz.summary is a property.
+            module_info[key] = summary() if callable(summary) else summary
         checkpoint["epoch"] = ep
         checkpoint["iter"] = it
         checkpoint["module"] = module_info
@@ -276,17 +305,15 @@ class Module:
         """
 
         def find_fname(model_path):
-            f_list = sorted(os.listdir(model_path))
-            ep = 0
-            it = 0
-            for f in f_list:
-                if f.endswith(".npy"):
-                    nums = f[:-4].split("_")
-                    if len(nums) >= 2:
-                        ep = max(ep, int(nums[0]))
-                        it = max(it, int(nums[1]))
-            fname = str(ep) + "_" + str(it) + ".npy"
-            return fname
+            import re
+            candidates = []
+            for name in os.listdir(model_path):
+                match = re.fullmatch(r"(\d+)_(\d+)\.npy", name)
+                if match:
+                    candidates.append((int(match[1]), int(match[2]), name))
+            if not candidates:
+                raise ValueError("No numbered checkpoints found.")
+            return max(candidates)[2]
 
         try:
             if model_path.endswith(".npy"):
@@ -302,13 +329,25 @@ class Module:
             raise ValueError(f"Invalid model path: {model_path}. Error: {e}")
 
         try:
-            for val, net in zip(checkpoint.item()["module"].values(), self._nets):
+            from copy import deepcopy
+            data = checkpoint.item()
+            ep, it = data["epoch"], data["iter"]
+            values = list(data["module"].values())
+            if len(values) != len(self._nets):
+                raise ValueError("Checkpoint component count does not match model.")
+            # Validate every component on a copy before changing the live model.
+            for val, net in zip(values, self._nets):
+                # Hamiltonians are native objects that cannot be pickled; validation
+                # replaces measurements without modifying the existing observables.
+                memo = {id(ham): ham for ham in (getattr(net, "_hams", None) or [])}
+                candidate = deepcopy(net, memo)
+                candidate.load_params(deepcopy(val))
+            for val, net in zip(values, self._nets):
                 net.load_params(val)
+            self._forward_valid = False
         except Exception as e:
             raise ValueError(f"Mismatched model. Error: {e}")
 
-        ep = checkpoint.item()["epoch"]
-        it = checkpoint.item()["iter"]
         print(f"Successfully restored checkpoint at ep: {ep} it: {it}")
         return ep, it + 1
 

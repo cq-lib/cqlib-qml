@@ -260,6 +260,7 @@ for epoch in range(100):
     
     # 更新参数
     ansatz.update()
+    ansatz.zero_grad()
     
     if epoch % 10 == 0:
         print(f"Epoch {epoch}: loss = {loss[0][0]:.4f}")
@@ -430,20 +431,19 @@ CRADL 利用这种结构，让位置量子比特同时与颜色量子比特和�
 
 ### 参数计数
 
-$$m = 2 \times (n_{\text{pos}} - 2) \times L$$
+$$m = 2 \times (n_{\text{qubits}} - 2) \times L = 2n_{\text{pos}}L$$
 
-对于 $2^n \times 2^n$ 图像，$n_{\text{pos}} = 2n + 1$。
+其中 $n_{\text{pos}} = n_{\text{qubits}} - 2$，另有一个颜色量子比特和一个读出量子比特。
 
 ### 使用示例
 
 ```python
 from cqlib_qml.ansatz import CRADL
 
-# 4x4 图像: n_pixels=16, n_pos=log2(16)=4
-# 量子比特数 = 4 + 1 = 5
-ansatz = CRADL(n_qubits=5, layers=2)
-ansatz.set_measurement(readouts=[4])
-print(f"参数数量: {ansatz.in_dim}")  # 2 × (5-2) × 2 = 12
+# 4x4 图像: 4 个位置量子比特 + 1 个颜色 + 1 个读出
+ansatz = CRADL(n_qubits=6, layers=2)
+ansatz.set_measurement(readouts=[5])
+print(f"参数数量: {ansatz.in_dim}")  # 2 × (6-2) × 2 = 16
 ```
 
 ---
@@ -454,7 +454,7 @@ CRAML 是 CRADL 的变体，每层同时应用 XX 和 ZZ 门。
 
 ### 设计原理
 
-CRAML 的设计目标是比 CRADL 具有更高的参数效率。通过将 XX 和 ZZ 门混合排列，可以在相同的层数下实现更强的表达能力。
+CRAML 与 CRADL 的参数数量相同，区别在于 XX 和 ZZ 门的排列顺序。每个位置量子比特的参数同时用于颜色量子比特和读出量子比特。
 
 ### 参数计数
 
@@ -465,19 +465,19 @@ $$m = 2 \times n_{\text{pos}} \times L$$
 ```python
 from cqlib_qml.ansatz import CRAML
 
-# 5 量子比特: 4 个位置 + 1 个颜色
+# 5 量子比特: 3 个位置 + 1 个颜色 + 1 个读出
 ansatz = CRAML(n_qubits=5, layers=2)
 ansatz.set_measurement(readouts=[4])
-print(f"参数数量: {ansatz.in_dim}")  # 2 × 5 × 2 = 20
+print(f"参数数量: {ansatz.in_dim}")  # 2 × (5-2) × 2 = 12
 ```
 
 ### CRADL 与 CRAML 的对比
 
 | 特性 | CRADL | CRAML |
 |------|-------|-------|
-| 参数数量 | $2(n_{\text{pos}}-2)L$ | $2n_{\text{pos}}L$ |
+| 参数数量 | $2(n_{\text{qubits}}-2)L$ | $2(n_{\text{qubits}}-2)L$ |
 | 门排列 | XX 门全部在 ZZ 门前 | XX 和 ZZ 交替 |
-| 适用场景 | 需要深度表达 | 需要参数效率 |
+| 门顺序选择 | 分组排列 | 交替排列 |
 
 ---
 
@@ -488,7 +488,7 @@ print(f"参数数量: {ansatz.in_dim}")  # 2 × 5 × 2 = 20
 | 通用量子机器学习 | HEAnsatz | 灵活可配置，硬件效率高 |
 | 二分类（简单） | BasicQNN | 结构简单，易于理解 |
 | 图像分类（FRQI） | CRADL | 专门设计，表达力强 |
-| 图像分类（参数效率） | CRAML | 混合设计，参数利用率高 |
+| 图像分类（交替门排列） | CRAML | XX 与 ZZ 交替排列 |
 | 完全自定义 | Ansatz 基类 | 最大灵活性 |
 
 ---
@@ -505,7 +505,7 @@ print(f"参数数量: {ansatz.in_dim}")  # 2 × 5 × 2 = 20
 
 ### 2. 梯度计算方法选择
 
-| 不同iator | 适用场景 | 复杂度 | 特点 |
+| 微分器 | 适用场景 | 复杂度 | 特点 |
 |-----------|----------|--------|------|
 | 伴随法 | 仿真 | $O(p)$ | 速度快，需要状态向量 |
 | 参数偏移法 | 硬件 | $O(2p)$ | 稳健，可硬件执行 |
@@ -541,7 +541,7 @@ ansatz.assign_parameters(bindings)
 **解决方案**：
 
 ```python
-# 1. 使用参数偏移不同iator
+# 1. 使用参数偏移微分器
 ansatz.set_differentiator("parameter_shift")
 
 # 2. 减少线路深度
@@ -600,15 +600,15 @@ print(len(ansatz))  # 应大于 0
 |------|----------|------|
 | `forward(X=None, quantum_state=None)` | np.ndarray | 前向传播，返回测量期望值 |
 | `backward(dLdexp=None)` | dict 或 np.ndarray | 反向传播，返回参数梯度 |
-| `set_measurement(readouts=None, hams=None)` | None | 设置测量方式 |
+| `set_measurement(**kwargs)` | None | 设置测量方式；只传 `readouts` 或 `hams` 其中一个 |
 | `set_optimizer(optimizer)` | None | 设置参数优化器 |
-| `set_differentiator(diff_type, shift=None)` | None | 设置梯度计算器 |
+| `set_differentiator(differentiator="adjoint", shift=np.pi/2)` | None | 设置梯度计算器 |
 | `update(cur_loss=None)` | None | 更新参数 |
 | `zero_grad()` | None | 将梯度置零 |
 | `freeze()` | None | 冻结参数（禁用训练） |
 | `unfreeze()` | None | 解冻参数（启用训练） |
 | `assign_parameters(bindings)` | None | 为参数赋值 |
-| `add_encoder(circuits)` | None | 添加编码电路 |
+| `add_encoder(other)` | None | 添加编码电路 |
 | `summary` | dict | 线路摘要信息 |
 | `in_dim` | int | 参数数量 |
 | `out_dim` | int | 测量数量 |

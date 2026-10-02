@@ -71,7 +71,7 @@ $$f(x; \boldsymbol{\theta}) = \langle 0 | U_{\text{enc}}(x)^\dagger U_{\text{ans
 
     # 3. 经典 + 量子
     model = Module(
-        Linear(in_dim=10, out_dim=4),
+        Linear(in_dim=10, out_dim=ansatz.in_dim),
         ansatz
     )
 
@@ -94,8 +94,8 @@ $$f(x; \boldsymbol{\theta}) = \langle 0 | U_{\text{enc}}(x)^\dagger U_{\text{ans
 | `freeze()` | 冻结所有组件 |
 | `unfreeze()` | 解冻所有组件 |
 | `random_init()` | 随机初始化 |
-| `save_checkpoint(path, ep, it, latest)` | 保存检查点 |
-| `load_checkpoint(path)` | 加载检查点 |
+| `save_checkpoint(model_path, ep, it, latest=False)` | 保存检查点 |
+| `load_checkpoint(model_path)` | 加载检查点 |
 
 ### 完整使用示例
 
@@ -200,7 +200,7 @@ $$f_{\text{QNN}}(x) = \langle 0 | U_{\text{enc}}(x)^\dagger U_{\text{ansatz}}(\b
         loss = loss_fn(y_pred, y_true)
 
         # 反向传播
-        qnn.backward(loss_fn.grads(-1))
+        qnn.backward(loss_fn.grads(-0.5))
 
         # 更新
         qnn.update()
@@ -361,7 +361,7 @@ HQNN 结合了量子计算的高维特征表示能力和经典计算的线性变
     # 不能使用其他 ansatz
     # ansatz = BasicQNN(n_qubits=4, layers=["XX"])  # 报错
 
-### 问题 2: 前向传播报错 "Ansatz must have measurements"
+### 问题 2: 构造 Module 时报错 "Ansatz must have measurements"
 
 **原因**：ansatz 未设置测量。
 
@@ -395,8 +395,8 @@ HQNN 结合了量子计算的高维特征表示能力和经典计算的线性变
 | `freeze()` | 冻结 |
 | `unfreeze()` | 解冻 |
 | `random_init()` | 随机初始化 |
-| `save_checkpoint(path, ep, it, latest)` | 保存检查点 |
-| `load_checkpoint(path)` | 加载检查点 |
+| `save_checkpoint(model_path, ep, it, latest=False)` | 保存检查点 |
+| `load_checkpoint(model_path)` | 加载检查点 |
 
 ### QNN
 
@@ -415,3 +415,14 @@ HQNN 结合了量子计算的高维特征表示能力和经典计算的线性变
 | `out_dim` | int | 输出维度 |
 | `params` | np.ndarray | 初始参数 |
 | `optimizer` | str/dict/OptimizerBase | 优化器 |
+## 训练状态与恢复范围
+
+`freeze()` 持续生效，只有显式 `unfreeze()` 才解除冻结。QNN/HQNN 的 `forward(..., trainable=False)` 仅执行本次推理，不改变冻结状态，并清除量子和经典组件的旧梯度与反向缓存。推理后 `update()` 不更新参数或推进优化器；再次反向必须先执行训练前向。Module/Ansatz 可使用仅关键字参数 `retain_derived=False` 表达相同行为。冻结的中间层在训练前向中仍能传播输入梯度。
+
+初始化 `params` 必须是一维有限实数向量，长度与 `ansatz.symbols` 完全一致。
+
+调用 `forward(..., trainable=False)` 时，在输入校验前即清除旧训练状态，因此输入无效、调用抛异常时也需要重新执行训练前向与反向后才能更新。冻结状态保持不变。
+
+Checkpoint 恢复模型参数、线路结构、测量配置及已保存的优化器/调度器状态，返回 `(epoch, iteration + 1)`。它没有完整保存随机数状态、数据迭代顺序、微分器配置和冻结状态，因此不保证任意训练过程精确续跑。
+
+加载 checkpoint 或调用 `load_params()` 会清除旧梯度、Jacobian 和反向缓存；恢复后直接调用 `update()` 不修改参数或推进优化器。

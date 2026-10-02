@@ -144,11 +144,11 @@ $$|\psi(\mathbf{x})\rangle = \frac{1}{\|\mathbf{x}\|} \sum_{i=0}^{N-1} x_i |i\ra
 
 **经典模式**：每个特征对应一个 RY 门：
 
-$$|\psi(x)\rangle = \bigotimes_{i=0}^{n-1} RY(x_i) |0\rangle$$
+$$|\psi(x)\rangle = \bigotimes_{i=0}^{n-1} RY(2x_i) |0\rangle$$
 
 **密集模式**：每个量子比特编码两个特征（RY + RZ）：
 
-$$|\psi(x)\rangle = \bigotimes_{i=0}^{n-1} RZ(x_{2i+1}) RY(x_{2i}) |0\rangle$$
+$$|\psi(x)\rangle = \bigotimes_{i=0}^{n-1} RZ(x_{2i+1}) RY(2x_{2i}) |0\rangle$$
 
 ### 使用示例
 
@@ -353,7 +353,8 @@ $$|I\rangle = \frac{1}{2^n} \sum_{i=0}^{2^{2n}-1} |c_i\rangle \otimes |i\rangle$
 
     # 2. 准备图像
     img = np.random.rand(4, 4)
-    img_quantized = change_grayscale(img, grayscale=4)
+    img_quantized = np.rint(change_grayscale(img, grayscale=4) * 3).astype(int)
+    # NEQR 使用整数颜色索引 0..3；FRQI 使用归一化灰度值
 
     # 3. 编码
     circuit = encoder(img_quantized)
@@ -631,3 +632,10 @@ ZZFeatureEncoder 受量子核方法启发，使用 ZZ 纠缠门创建特征空�
 | 方法 | 描述 |
 |------|------|
 | `__call__(data)` | ZZ 特征编码 |
+## 输入契约与 FRQI 亮度
+
+FRQI/NEQR 接受 NumPy 数组和 Tensor；Tensor 会先 detach 并移到 CPU，不保留 torch autograd 关系。FRQI 按每张图像的最大像素值归一化，因此全 0.2 与全 0.8 图像会得到相同量子态；当前默认行为不保存绝对亮度差异。NEQR 接受整数颜色索引。BasisEncoder 接受整数及整数值浮点数组，拒绝空、负数、非整数和非有限输入。
+
+FRQI 的普通与 QIC 编码仅跳过精确零像素，微小正数图像仍按最大像素值归一化；全零图像不执行颜色旋转。FRQI/NEQR 的单像素 QIC 使用无位置控制的颜色门。
+
+振幅编码分别缩放实部与虚部，并对递归子向量使用稳定范数，避免大数与次正规数（例如 `1e-310`）导致归一化溢出或下溢。低于浮点可表示范围的结果无法保证保留。cqlib 2.0.0b3 模拟极小旋转（例如 `RY(2e-150)`）时可能丢失极小振幅，生成线路的角度正确不代表底层模拟能保留所有尺度。

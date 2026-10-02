@@ -5,16 +5,15 @@ description = "Quantum machine learning package based on Cqlib"
 authors = [
     { name = "China Telecom Quantum Group Quantum Computing Team", email = "tianyan@chinatelecom.cn" },
 ]
-license = { file = "LICENSE" }
+license = "Apache-2.0"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 classifiers = [
     "Environment :: Console",
     "Operating System :: MacOS",
     "Operating System :: Microsoft :: Windows",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3 :: Only",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -52,3 +51,11 @@ include = ["cqlib_qml*"]
 [build-system]
 requires = ["setuptools>=80.0", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+target-version = "py311"
+extend-exclude = ["docs/api", "build", "dist", ".wheel-venv"]
+
+[tool.ruff.lint]
+# Adopt correctness checks first; repository-wide style changes are separate.
+select = ["E9", "F63", "F7", "F82"]

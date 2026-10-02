@@ -183,7 +183,7 @@ Total support vectors: 130
 
 #### predict_proba(X)
 
-返回类别概率估计（需设置 `probability=True`）。内部使用 Platt 缩放将 SVM 的决策值映射为概率。
+返回类别概率估计（需设置 `probability=True`）。 scikit-learn 1.9 已弃用 SVC 的 `probability` 参数，计划在 1.11 移除；当前 QSVM 此选项同样受影响。新代码可使用 `CalibratedClassifierCV(QSVM(encoder=encoder), ensemble=False)` 校准分类概率。内部使用 Platt 缩放将 SVM 的决策值映射为概率。
 
 ```python
 qsvm = QSVM(encoder=encoder, C=1.0, probability=True)
@@ -288,6 +288,8 @@ VQC(
 | `epochs` | int | 训练轮数 |
 | `batch_size` | int | 批次大小 |
 | `verbose` | bool | 是否打印训练进度 |
+
+训练日志中的 epoch loss：MSE 对所有样本和输出元素取均值；BCE 对样本取均值；CrossEntropy 对每样本的交叉熵取均值。多分类 MSE 不对类别维度求和，数值因此不能直接与 CrossEntropy 比较。最后一个不足 batch_size 的批次按实际样本数加权。
 
 ### 核心方法
 
@@ -713,7 +715,7 @@ for epoch in range(EPOCHS):
 ### 3. 性能优化
 
 ```python
-# 1. 使用 adjoint 不同iator（仿真更快）
+# 1. 使用 adjoint 微分器（仿真更快）
 ansatz.set_differentiator("adjoint")
 
 # 2. 设置合理的批次大小
@@ -781,7 +783,7 @@ qkm = QKM(encoder=encoder, swap_test=False)
 **解决方案:**
 
 ```python
-# 使用参数偏移不同iator（更稳定）
+# 使用参数偏移微分器（更稳定）
 ansatz.set_differentiator("parameter_shift")
 
 # 或调整移位量
@@ -842,3 +844,16 @@ model.load_checkpoint("./checkpoints/model.npy")
 | `validate()` | HQNN_classification | HQNN 验证 |
 | `train()` | QNN_classification | QNN 训练一个 epoch |
 | `validate()` | QNN_classification | QNN 验证 |
+## 分类器配置与验证指标
+
+`QSVM.fit(X, y, sample_weight=None)` 将样本权重传给 SVC，不接受其他训练关键字。VQC 的预测特征数必须等于训练时特征数。两个分类器拒绝未知 `set_params` 名称；配置改变后需要重新 fit。
+
+VQC 的 `epochs` 必须为正整数；`batch_size` 必须为正整数或 `None`（整批训练）。不接受布尔值、浮点数、零和负数。`fit()` 在创建 QNN、修改类别和参数前验证；`set_params()` 的非法训练配置也会直接报错，不修改已有配置或拟合状态。
+
+VQC 在私有副本上执行编码和训练，成功后才提交结果；失败时保留上一次成功训练的模型、类别、参数和优化器状态。QSVM 保存训练特征的内部副本，调用者修改原始数组不会改变已拟合模型的预测。
+
+QKM 接受一维单样本或二维非空有限数值批次，振幅编码支持复数输入。编码或模拟失败不会提交新的特征维度、量子位数或线路缓存。当前尚未复用样本状态向量或利用自核矩阵对称性减少计算。
+
+MNIST 示例独立创建输出目录，不依赖 TensorBoard。验证集固定顺序且保留最后一个不足批次；准确率以实际样本数为分母。验证损失按每样本均值报告：求和损失累计后除以总样本数，均值损失先按批次实际样本数加权。空验证集报错。
+
+训练示例将当前损失传给 `update(cur_loss=loss)`，可搭配 KingScheduler。

@@ -1,0 +1,66 @@
+name: Tests and release artifacts
+on:
+  push:
+    tags:
+      - '*'
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ['3.11', '3.12', '3.13', '3.14']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install . pytest
+      - run: python -m pip check
+      - run: python -m pip freeze
+      - run: python scripts/verify_wheel.py
+
+  artifacts:
+    name: Build and verify tagged distributions
+    needs: tests
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install . -r requirements-dev.txt 'setuptools>=80'
+      - run: python -m ruff check .
+      - name: Build distributions with Python 3.11
+        run: python -m build
+      - name: Validate distribution metadata
+        run: python -m twine check dist/*
+      - name: Rebuild wheel from source distribution
+        run: python scripts/verify_sdist.py dist/*.tar.gz --outdir rebuilt
+      - name: Create isolated wheel test environment
+        run: python -m venv .wheel-venv
+      - name: Install built wheel
+        run: .wheel-venv/bin/python -m pip install dist/*.whl pytest
+      - run: .wheel-venv/bin/python -m pip check
+      - run: .wheel-venv/bin/python -m pip freeze
+      - name: Test built wheel outside checkout
+        run: .wheel-venv/bin/python scripts/verify_wheel.py
+      - name: Install wheel rebuilt from source distribution
+        run: .wheel-venv/bin/python -m pip install --force-reinstall --no-deps rebuilt/*.whl
+      - run: .wheel-venv/bin/python -m pip check
+      - name: Test rebuilt wheel outside checkout
+        run: .wheel-venv/bin/python scripts/verify_wheel.py
+      - name: Upload verified distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+          if-no-files-found: error

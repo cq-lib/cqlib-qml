@@ -27,6 +27,8 @@ Examples:
     (2, 2)
 """
 
+from copy import copy
+
 import numpy as np
 from typing import Optional, Union, List
 
@@ -138,7 +140,12 @@ class QKM:
             self._circuit_cache[cache_key] = circuit
             circuits.append(circuit)
 
-        self._n_qubits = circuits[0].num_qubits
+        n_qubits = circuits[0].num_qubits
+        if any(circuit.num_qubits != n_qubits for circuit in circuits):
+            raise ValueError("Encoded circuits must have the same number of qubits.")
+        if self._n_qubits is not None and self._n_qubits != n_qubits:
+            raise ValueError("Encoded circuit width does not match the previous encoding.")
+        self._n_qubits = n_qubits
         return circuits
 
     def _fidelity_direct(self, cir_i: Circuit, cir_j: Circuit) -> float:
@@ -188,8 +195,9 @@ class QKM:
             float: Fidelity F = |⟨ψ|φ⟩|^2 in [0, 1].
 
         Note:
-            This method is suitable for hardware execution but requires
-            additional qubits (2*n_qubits + 1).
+            The swap-test circuit is theoretically suitable for hardware, but
+            this implementation executes Statevector with no shots or hardware
+            backend. It requires additional qubits (2*n_qubits + 1).
         """
         n_ancilla = 1
         total_qubits = 2 * self._n_qubits + n_ancilla
@@ -201,7 +209,7 @@ class QKM:
         swap_circuit.h(ancilla_idx)
         for i in range(self._n_qubits):
             cswap = MCGate(1, StandardGate.SWAP)
-            swap_circuit.multi_control_gate(cswap, [ancilla_idx, i, i + self._n_qubits])
+            swap_circuit.append_mc_gate(cswap, [ancilla_idx, i, i + self._n_qubits])
         swap_circuit.h(ancilla_idx)
 
         state = Statevector(total_qubits)
@@ -254,26 +262,53 @@ class QKM:
         Raises:
             ValueError: If feature dimensions don't match or input shapes are invalid.
 
+        Note:
+            A one-dimensional input denotes one sample. Empty, nonnumeric,
+            nonfinite and higher-dimensional inputs are rejected. Complex
+            amplitudes are supported by AmplitudeEncoder. Failed calls leave
+            this kernel's dimensions and circuit cache unchanged.
+
         Examples:
             >>> X = np.random.randn(3, 4)
             >>> K = qkm.kernel(X)  # Self-kernel: (3, 3)
             >>> Y = np.random.randn(2, 4)
             >>> K = qkm.kernel(X, Y)  # Cross-kernel: (3, 2)
         """
-        X = np.asarray(X)
-        if X.ndim == 1:
-            X = X.reshape(1, -1)
+        X = self._validate_samples(X, 'X')
         symmetric = Y is None
-        if symmetric:
-            Y = X
-        Y = np.asarray(Y)
-        if Y.ndim == 1:
-            Y = Y.reshape(1, -1)
+        Y = X if symmetric else self._validate_samples(Y, 'Y')
         if X.shape[1] != Y.shape[1]:
             raise ValueError(
                 f"Feature dimension mismatch: X has {X.shape[1]} features, " f"Y has {Y.shape[1]} features."
             )
 
+        # Stage dimensions and new cache entries privately. Neither encoding
+        # nor simulation failure may change the last successful kernel state.
+        candidate = copy(self)
+        candidate._circuit_cache = self._circuit_cache.copy()
+        result = candidate._compute_kernel(X, Y, symmetric)
+        self._feature_dim = candidate._feature_dim
+        self._n_qubits = candidate._n_qubits
+        self._circuit_cache = candidate._circuit_cache
+        return result
+
+    @staticmethod
+    def _validate_samples(data, name):
+        """Accept one sample or a nonempty numeric batch, including complex amplitudes."""
+        try:
+            data = np.asarray(data)
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"{name} must contain numeric samples.") from error
+        if data.ndim == 1:
+            data = data.reshape(1, -1)
+        if data.ndim != 2 or 0 in data.shape:
+            raise ValueError(f"{name} must be a nonempty one- or two-dimensional array.")
+        if data.dtype.kind not in 'biufc' or not np.all(np.isfinite(data)):
+            raise ValueError(f"{name} must contain finite numeric values.")
+        return data
+
+    def _compute_kernel(self, X, Y, symmetric):
+        """Compute on a staged copy; publish its state only after success."""
         n_features = X.shape[1]
         if self._feature_dim is None:
             self._feature_dim = n_features

@@ -58,6 +58,7 @@ class QubitLattice(ImageEncoder):
             n_pixels (int): Number of pixels.
         """
         super(QubitLattice, self).__init__(n_pixels)
+        self._n_channel = 1
 
     def __call__(self, imgs):
         """
@@ -101,10 +102,9 @@ class QubitLattice(ImageEncoder):
         Returns:
             Circuit: Encoded quantum circuit.
         """
-        max_p = np.max(img)
         encoder = Circuit(self._n_pixels)
         for i in range(img.shape[0]):
-            if abs(img[i] - max_p) < 1e-9:
+            if img[i] == 1:
                 encoder.x(i)
         return encoder
 
@@ -123,5 +123,5 @@ class QubitLattice(ImageEncoder):
                 f"The number of pixels ({img.shape[0]}) should be equal to "
                 f"the number of data qubits ({self._n_pixels})."
             )
-        if np.unique(img).shape[0] != 2:
+        if not np.isin(img, [0, 1]).all():
             raise ValueError("QubitLattice only supports binary images.")

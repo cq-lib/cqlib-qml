@@ -81,6 +81,10 @@ class Layer(ABC):
 
     def __init__(self):
         """Initialize a Layer instance."""
+        self._forward_valid = False
+        self._gradient_valid = False
+        self._tracks_gradient_validity = False
+        self._inference_invalidated = False
         self._X = []
         self._act_fn = None
         self._trainable = True
@@ -163,6 +167,10 @@ class Layer(ABC):
             >>> layer.set_optimizer(Adam(lr=0.001))
         """
         self._optimizer = OptimizerInitializer(optimizer)()
+        # Each component owns its state; stable parameter keys must not collide
+        # when the same optimizer configuration is supplied to several layers.
+        if isinstance(optimizer, OptimizerBase):
+            self._optimizer = self._optimizer.copy()
 
     def freeze(self) -> None:
         """Freeze the parameters in the layer (disable training)."""
@@ -181,6 +189,9 @@ class Layer(ABC):
         """
         if not self._trainable:
             raise ValueError("Layer is frozen.")
+        self._forward_valid = False
+        self._gradient_valid = False
+        self._inference_invalidated = False
         self._X = []
         for k, v in self._derived_variables.items():
             self._derived_variables[k] = None
@@ -190,6 +201,17 @@ class Layer(ABC):
                 self._gradients[k] = np.zeros_like(self._parameters[k])
             else:
                 self._gradients[k] = np.zeros_like(self._gradients[k])
+
+    def _invalidate_gradients(self):
+        """Clear inference-invalid training state, including on frozen layers."""
+        self._inference_invalidated = True
+        self._forward_valid = False
+        self._gradient_valid = False
+        self._X = []
+        for key in self._derived_variables:
+            self._derived_variables[key] = None
+        for key in self._gradients:
+            self._gradients[key] = np.zeros_like(self._gradients[key])
 
     def update(self, cur_loss: Optional[float] = None) -> None:
         """
@@ -209,10 +231,12 @@ class Layer(ABC):
         """
         if not self._trainable:
             raise ValueError("Layer is frozen.")
+        if self._inference_invalidated or (self._tracks_gradient_validity and not self._gradient_valid):
+            return
         self._optimizer.step()
         for k, v in self._gradients.items():
             if k in self._parameters:
-                unique_key = f"{id(self)}_{k}"
+                unique_key = k
                 self._parameters[k] = self._optimizer(self._parameters[k], v, unique_key, cur_loss)
 
     def summary(self) -> dict:
@@ -231,7 +255,9 @@ class Layer(ABC):
         return {
             "layer": self.hyperparameters["layer"],
             "parameters": self.parameters,
-            "hyperparameters": self.hyperparameters,
+            "hyperparameters": {**self.hyperparameters, "optimizer": (
+                self._optimizer.state_dict() if self._optimizer is not None else None
+            )},
         }
 
     def load_params(self, summary_dict: dict) -> None:
@@ -261,9 +287,11 @@ class Layer(ABC):
             self._gradients[key] = np.zeros_like(val)
         for key, val in summary_dict["hyperparameters"].items():
             if key == "optimizer":
-                self.set_optimizer(val)
+                if val is not None:
+                    self.set_optimizer(val)
             elif key == "act_fn":
                 if bool(val) ^ bool(self._act_fn):
                     warnings.warn("Activation function mismatch. Check your configuration.")
                 self._act_fn = ActivationInitializer(val)()
         self._init = True
+        self._invalidate_gradients()

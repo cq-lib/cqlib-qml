@@ -4,9 +4,7 @@
 
 ## 模块结构
 
-    loss/
-    ├── __init__.py              # 模块导出
-    └── loss.py                  # 损失函数实现
+    cqlib_qml/loss.py
 
 ---
 
@@ -129,7 +127,7 @@ $$L_{\text{BCE}} = -\frac{1}{N} \sum_{i=1}^{N} [y_i \log(\hat{y}_i) + (1 - y_i) 
 
 **梯度**：
 
-$$\frac{\partial L_{\text{BCE}}}{\partial \hat{y}_i} = \frac{\hat{y}_i - y_i}{\hat{y}_i(1 - \hat{y}_i)}$$
+$$\frac{\partial L_{\text{BCE}}}{\partial \hat{y}_i} = \frac{\hat{y}_i - y_i}{N\hat{y}_i(1 - \hat{y}_i)}$$
 
 ### 使用示例
 
@@ -315,7 +313,7 @@ $$\frac{\partial L}{\partial \hat{y}_i} = \text{Softmax}(\hat{y})_i - y_i$$
 
 **输出：**
 
-    Softmax CrossEntropy 损失: 0.3704
+    Softmax CrossEntropy 损失: 0.4170
     Softmax 输出: [[0.6590 0.2424 0.0986]]
     梯度 (p - y): [[-0.3410  0.2424  0.0986]]
 
@@ -353,7 +351,7 @@ $$L_{\text{Hinge}} = \frac{1}{N} \sum_{i=1}^{N} \max(0, 1 - y_i \hat{y}_i)$$
 
 **梯度**：
 
-$$\frac{\partial L_{\text{Hinge}}}{\partial \hat{y}_i} = \begin{cases} -y_i & \text{if } 1 - y_i \hat{y}_i > 0 \\ 0 & \text{otherwise} \end{cases}$$
+$$\frac{\partial L_{\text{Hinge}}}{\partial \hat{y}_i} = \begin{cases} -y_i/N & \text{if } 1 - y_i \hat{y}_i > 0 \\ 0 & \text{otherwise} \end{cases}$$
 
 ### 使用示例
 
@@ -500,3 +498,5 @@ $$\frac{\partial L_{\text{Hinge}}}{\partial \hat{y}_i} = \begin{cases} -y_i & \t
 |------|------|
 | `__call__(pred, target)` | 计算合页损失 |
 | `grads(dpred=None)` | 计算梯度 |
+
+交叉熵类默认 `reduction="sum"`，对整个批次求和；可使用 `CrossEntropy(reduction="mean")` 或 `SoftmaxCrossEntropy(reduction="mean")` 按样本数求均值，梯度也相应除以批次大小。MSE、BCE 和 Hinge 使用元素均值，公式中的 N 为元素总数。

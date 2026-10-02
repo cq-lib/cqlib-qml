@@ -1,4 +1,4 @@
-# cqlib_qml/loss/loss.py
+# cqlib_qml/loss.py
 """
 Commonly used loss functions for quantum machine learning.
 
@@ -129,7 +129,6 @@ class LossFun(ABC):
         """
         fun_grad = grad(self._get_loss)
         gradients = fun_grad(self._pred, self._target)
-        gradients[abs(self._pred - self._target) < 1e-12] = 0
         if dpred is not None:
             gradients *= dpred
         return gradients
@@ -281,7 +280,7 @@ class CrossEntropy(LossFun):
     targets. Predictions should be probabilities that sum to 1.
 
     Args:
-        None
+        reduction (str): "sum" (default) or "mean" over samples.
 
     Note:
         Targets should be one-hot encoded. Predictions should be
@@ -295,9 +294,12 @@ class CrossEntropy(LossFun):
         >>> grads = ce.grads()
     """
 
-    def __init__(self):
+    def __init__(self, reduction="sum"):
         """Initialize a CrossEntropyLoss instance."""
         super().__init__()
+        if reduction not in {"sum", "mean"}:
+            raise ValueError("reduction must be sum or mean")
+        self.reduction = reduction
 
     def _get_loss(self, pred: np.ndarray, target: np.ndarray):
         """
@@ -311,8 +313,8 @@ class CrossEntropy(LossFun):
             float: Cross entropy loss value.
         """
         eps = np.finfo(float).eps
-        loss = np.clip(-np.sum(target * np.log(pred + eps)), 0, 100)
-        return loss
+        loss = -np.sum(target * np.log(np.maximum(pred, eps)))
+        return loss / pred.shape[0] if self.reduction == "mean" else loss
 
     def __str__(self):
         return "CrossEntropyLoss"
@@ -328,7 +330,7 @@ class SoftmaxCrossEntropy(LossFun):
     L_CE(y) = -Σ y_i · log(softmax(ŷ)_i)
 
     Args:
-        None
+        reduction (str): "sum" (default) or "mean" over samples.
 
     Note:
         This loss should be used when the last layer produces raw logits
@@ -346,9 +348,12 @@ class SoftmaxCrossEntropy(LossFun):
         (1, 3)
     """
 
-    def __init__(self):
+    def __init__(self, reduction="sum"):
         """Initialize a SoftmaxCrossEntropy instance."""
         super().__init__()
+        if reduction not in {"sum", "mean"}:
+            raise ValueError("reduction must be sum or mean")
+        self.reduction = reduction
 
     def _get_loss(self, pred: np.ndarray, target: np.ndarray):
         """
@@ -361,11 +366,12 @@ class SoftmaxCrossEntropy(LossFun):
         Returns:
             float: Cross entropy loss value.
         """
-        exps = np.exp(pred)
+        shifted = pred - np.max(pred, axis=1).reshape(-1, 1)
+        exps = np.exp(shifted)
         self._pred = exps / np.sum(exps, axis=1).reshape(-1, 1)
-        eps = np.finfo(float).eps
-        loss = np.clip(-np.sum(target * np.log(self._pred + eps)), 0, 100)
-        return loss
+        log_probs = shifted - np.log(np.sum(exps, axis=1, keepdims=True))
+        loss = -np.sum(target * log_probs)
+        return loss / pred.shape[0] if self.reduction == "mean" else loss
 
     def grads(self, dpred: np.ndarray = None) -> np.ndarray:
         """
@@ -388,10 +394,11 @@ class SoftmaxCrossEntropy(LossFun):
             >>> loss = ce(logits, target)
             >>> grads = ce.grads()
             >>> print(grads)
-            [[-0.09  0.12  0.09]]  # Approximate values
+            [[-0.5136  0.2950  0.2186]]  # Approximate values
         """
-        gradients = self._pred - self._target
-        gradients[abs(self._pred - self._target) < 1e-12] = 0
+        gradients = self._pred * np.sum(self._target, axis=1, keepdims=True) - self._target
+        if self.reduction == "mean":
+            gradients = gradients / self._pred.shape[0]
         if dpred is not None:
             gradients *= dpred
         return gradients

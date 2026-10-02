@@ -4,9 +4,7 @@
 
 ## 模块结构
 
-    scheduler/
-    ├── __init__.py              # 模块导出
-    └── scheduler.py             # 调度器实现
+    cqlib_qml/scheduler.py
 
 ---
 
@@ -137,6 +135,10 @@ $$\eta_t = \eta_0$$
 指数衰减调度器按阶段指数衰减学习率：
 
 **平滑衰减**（`staircase=False`）：
+
+$$\eta_t = \eta_0 \cdot \gamma^{t / T}$$
+
+**阶梯衰减**（`staircase=True`）：
 
 $$\eta_t = \eta_0 \cdot \gamma^{\lfloor t / T \rfloor}$$
 
@@ -351,13 +353,11 @@ $$\eta_t = \text{scale} \cdot d_{\text{model}}^{-0.5} \cdot \min\left(t^{-0.5}, 
 ### 3. 调度器状态保存与恢复
 
     # 保存调度器状态
-    state = {
-        "hyperparameters": scheduler.hyperparameters,
-        "current_lr": scheduler.current_lr  # 仅 KingScheduler
-    }
+    state = scheduler.state_dict()
 
-    # 恢复调度器状态（需要重新创建实例后设置）
-    scheduler.set_params(state["hyperparameters"])
+    # 恢复超参数和运行状态（包括 King 的损失历史与当前学习率）
+    from cqlib_qml.scheduler import SchedulerInitializer
+    scheduler = SchedulerInitializer(state)()
 
 ---
 
@@ -394,3 +394,22 @@ $$\eta_t = \text{scale} \cdot d_{\text{model}}^{-0.5} \cdot \min\left(t^{-0.5}, 
 | `model_dim` | 512 | 模型维度 |
 | `scale_factor` | 1 | 缩放因子 |
 | `warmup_steps` | 4000 | 预热步数 |
+
+## KingScheduler：根据损失自动衰减
+
+KingScheduler 对损失历史拟合线性趋势；持续缺乏下降趋势时，学习率乘以 `decay`。`patience` 为正整数，少于三个观测时保持学习率以避免不可靠的方差估计。调用时必须提供 `cur_loss`。
+
+```python
+from cqlib_qml.scheduler import KingScheduler
+from cqlib_qml.optimizer import SGD
+import numpy as np
+
+opt = SGD(lr_scheduler=KingScheduler(initial_lr=0.1, patience=3, decay=0.5))
+weight = np.array([1.0])
+for step in range(8):
+    opt.step()
+    weight = opt.update(weight, np.array([0.1]), "weight", cur_loss=1.0)
+print(opt.lr_scheduler.current_lr)
+```
+
+一个优化步骤中的所有参数使用同一个学习率；损失历史每个步骤只更新一次。直接调用调度器时，调用方负责每步仅调用一次。

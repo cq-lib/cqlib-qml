@@ -46,6 +46,28 @@ class TestHQNN:
         model.set_optimizer("adam(lr=0.001)")
         assert model._ansatz._optimizer is not None
 
+    def test_init_with_readouts(self):
+        ansatz = HEAnsatz(n_qubits=4, d=1, layers=["RY", "CX"])
+        model = HQNN(ansatz=ansatz, out_dim=3, readouts=[0, 2])
+        assert model._ansatz.readouts == [0, 2]
+        assert model._linear.in_dim == 2
+
+    def test_init_keeps_ansatz_readouts(self):
+        ansatz = HEAnsatz(n_qubits=4, d=1, layers=["RY", "CX"])
+        ansatz.set_measurement(readouts=[1, 3])
+        model = HQNN(ansatz=ansatz, out_dim=2)
+        assert model._ansatz.readouts == [1, 3]
+        assert model._linear.in_dim == 2
+
+    def test_forward_with_readouts(self):
+        ansatz = HEAnsatz(n_qubits=4, d=1, layers=["RY", "CX"])
+        model = HQNN(ansatz=ansatz, out_dim=3, readouts=[0, 1])
+        encoder = FRQI(n_pixels=4, grayscale=2)
+        data = np.array([[0, 1], [1, 0]], dtype=np.float32)
+        data_circuits = encoder(data)
+        output = model.forward(data_circuits)
+        assert output.shape == (1, 3)
+
     def test_trainable_mode(self):
         ansatz = HEAnsatz(n_qubits=4, d=1, layers=["RY", "CX"])
         model = HQNN(ansatz=ansatz, out_dim=3)
@@ -71,6 +93,22 @@ class TestQNN:
         ansatz = HEAnsatz(n_qubits=4, d=1, layers=["RY", "CX"])
         model = QNN(ansatz=ansatz, readouts=[0, 1])
         assert model is not None
+
+    def test_init_readouts_override_ansatz_readouts(self):
+        ansatz = HEAnsatz(n_qubits=4, d=1, layers=["RY", "CX"])
+        ansatz.set_measurement(readouts=[0])
+        model = QNN(ansatz=ansatz, readouts=[1, 2, 3])
+        assert model._ansatz.readouts == [1, 2, 3]
+
+    def test_forward_readouts_override_ansatz_readouts(self):
+        ansatz = HEAnsatz(n_qubits=4, d=1, layers=["RY", "CX"])
+        ansatz.set_measurement(readouts=[0])
+        model = QNN(ansatz=ansatz, readouts=[0, 1, 2])
+        encoder = FRQI(n_pixels=4, grayscale=2)
+        data = np.array([[0, 1], [1, 0]], dtype=np.float32)
+        data_circuits = encoder(data)
+        output = model.forward(data_circuits)
+        assert output.shape == (1, 3)
 
     def test_init_with_params(self):
         ansatz = HEAnsatz(n_qubits=4, d=1, layers=["RY", "CX"])

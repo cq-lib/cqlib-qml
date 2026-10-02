@@ -115,6 +115,13 @@ class TestFRQI:
         for circ in circuits:
             assert circ.num_qubits == 3
 
+    def test_use_qic(self):
+        encoder = FRQI(n_pixels=4, grayscale=2)
+        img = np.array([[0, 1], [1, 0]], dtype=np.float32)
+        circuit = encoder(img, use_qic=True)
+        assert isinstance(circuit, Circuit)
+        assert circuit.num_qubits == 3
+
 
 class TestNEQR:
     def test_init(self):
@@ -132,6 +139,20 @@ class TestNEQR:
         circuits = encoder(img)
         assert isinstance(circuits, Circuit)
 
+    def test_get_groups_float_pixels(self):
+        encoder = NEQR(n_pixels=4, grayscale=4)
+        img = np.array([0, 1, 2, 3], dtype=np.float32)
+        groups = encoder._get_groups(img)
+        expected = np.array([[0, 0, 1, 1], [0, 1, 0, 1]], dtype=np.bool_)
+        assert np.array_equal(groups, expected)
+
+    def test_use_qic(self):
+        encoder = NEQR(n_pixels=4, grayscale=4)
+        img = np.array([[0, 1], [2, 3]], dtype=np.float32)
+        circuit = encoder(img, use_qic=True)
+        assert isinstance(circuit, Circuit)
+        assert circuit.num_qubits == 4
+
 
 class TestQubitLattice:
     def test_binary_image(self):
@@ -139,6 +160,19 @@ class TestQubitLattice:
         img = np.array([[0, 1], [1, 0]])
         circuits = encoder(img)
         assert isinstance(circuits, Circuit)
+
+    def test_batch_images(self):
+        encoder = QubitLattice(n_pixels=4)
+        imgs = np.array([
+            [[0, 1], [1, 0]],
+            [[1, 0], [0, 1]]
+        ])
+        circuits = encoder(imgs)
+        assert isinstance(circuits, list)
+        assert len(circuits) == 2
+        for circ in circuits:
+            assert isinstance(circ, Circuit)
+            assert circ.num_qubits == 4
 
     def test_non_binary_raises(self):
         encoder = QubitLattice(n_pixels=4)

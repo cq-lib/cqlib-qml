@@ -257,7 +257,8 @@ class TestQSVM:
         assert hasattr(qsvm, "classes_")
         assert hasattr(qsvm, "_svm")
         assert hasattr(qsvm, "_X_fit")
-        assert qsvm._X_fit is X
+        np.testing.assert_array_equal(qsvm._X_fit, X)
+        assert not np.shares_memory(qsvm._X_fit, X)
 
     def test_clear_cache(self):
         """Test clearing the circuit cache."""
@@ -311,6 +312,23 @@ class TestVQC:
 
         vqc = VQC(ansatz=ansatz, encoder=encoder, readouts=[0], loss="BCE")
         assert vqc.loss == "BCE"
+
+    def test_init_bce_loss_default_readouts(self):
+        """Test BCE loss with readouts omitted falls back to default [0]."""
+        ansatz = HEAnsatz(n_qubits=2, d=1, layers=["RY"])
+        encoder = AngleEncoder(mode="classical")
+
+        vqc = VQC(ansatz=ansatz, encoder=encoder, loss="BCE")
+        assert vqc.loss == "BCE"
+        assert vqc.readouts is None  # Constructor arguments remain cloneable; effective readout is [0].
+
+    def test_init_cross_entropy_default_readouts_raises(self):
+        """Test that CrossEntropy with readouts omitted raises ValueError (not TypeError)."""
+        ansatz = HEAnsatz(n_qubits=2, d=1, layers=["RY"])
+        encoder = AngleEncoder(mode="classical")
+
+        with pytest.raises(ValueError, match="CrossEntropy loss requires 2 readouts"):
+            VQC(ansatz=ansatz, encoder=encoder, loss="CrossEntropy", n_classes=2)
 
     def test_init_bce_loss_multiple_readouts_raises(self):
         """Test that BCE loss with multiple readouts raises ValueError."""
@@ -464,10 +482,14 @@ class TestVQC:
         y_pred, y_true = vqc._prepare_for_loss(expectations, y)
         assert y_pred.shape == y_true.shape
 
-    @pytest.mark.skip(reason="VQC training requires proper quantum circuit setup")
-    def test_fit_skip(self):
-        """Skip VQC training test that requires full quantum circuit setup."""
-        pass
+    def test_fit_updates_quantum_parameters(self):
+        ansatz = HEAnsatz(2, 1, ["RY", "CX"])
+        initial = dict(zip(ansatz.symbols, [0.3, 0.7]))
+        ansatz.assign_parameters(initial)
+        vqc = VQC(ansatz, AngleEncoder(mode="classical"), loss="BCE",
+                  epochs=2, batch_size=2, optimizer="sgd(lr=0.01)", verbose=False)
+        vqc.fit(np.array([[0.1, 0.3], [0.5, 0.8]]), np.array([0, 1]))
+        assert abs(ansatz._bindings["params0_0"] - initial["params0_0"]) > 1e-5
 
 
 # ============================================================================
@@ -496,10 +518,17 @@ class TestAlgorithmsIntegration:
         y_pred = qsvm.predict(X_test)
         assert len(y_pred) == len(y_test)
 
-    @pytest.mark.skip(reason="VQC training requires proper quantum circuit setup")
-    def test_vqc_workflow_skip(self):
-        """Skip VQC workflow test that requires full quantum circuit setup."""
-        pass
+    def test_vqc_train_predict_workflow(self):
+        ansatz = HEAnsatz(2, 1, ["RY", "CX"])
+        ansatz.assign_parameters(dict(zip(ansatz.symbols, [0.3, 0.7])))
+        vqc = VQC(ansatz, AngleEncoder(mode="classical"), readouts=[0, 1],
+                  loss="CrossEntropy", epochs=2, verbose=False)
+        x, y = np.array([[0.1, 0.3], [0.5, 0.8]]), np.array([0, 1])
+        vqc.fit(x, y)
+        probabilities = vqc.predict_proba(x)
+        assert np.isfinite(probabilities).all()
+        np.testing.assert_allclose(probabilities.sum(axis=1), 1.0)
+        assert set(vqc.predict(x)).issubset({0, 1})
 
 
 # ============================================================================

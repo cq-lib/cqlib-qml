@@ -135,13 +135,14 @@ class Ansatz:
             "in_dim": self.in_dim,
             "out_dim": self.out_dim,
             "readouts": self.readouts,
-            "hamiltonians": self.hams,
+            "hamiltonians": (None if self.hams is None else [
+                {"num_qubits": ham.num_qubits,
+                 "terms": [(str(pauli), coeff) for pauli, coeff in ham.terms]}
+                for ham in self.hams
+            ]),
             "circuit": self._circuit_summary(),
             "optimizer": (
-                {
-                    "cache": self._optimizer.cache,
-                    "hyperparameters": self._optimizer.hyperparameters,
-                }
+                self._optimizer.state_dict()
                 if self._optimizer
                 else None
             ),
@@ -192,10 +193,13 @@ class Ansatz:
         self._assigned_cir = None
         self._bindings = None
 
+        self._forward_valid = False
+        self._gradient_valid = False
         self._trainable = True
         self._updatable = True
 
         self._gradients = {}
+        self._jacobian = {}
         self._out_dim = 0
         self._encoder = None
 
@@ -242,6 +246,10 @@ class Ansatz:
         if isinstance(enc_cirs, np.ndarray):
             enc_cirs = enc_cirs.tolist()
         if isinstance(enc_cirs, list):
+            if not enc_cirs:
+                raise ValueError("Encoding circuit list must not be empty")
+            if not isinstance(enc_cirs[0], Circuit):
+                raise TypeError("Expected Circuit as the first encoder element")
             width = enc_cirs[0].width
             for enc_cir in enc_cirs:
                 if not isinstance(enc_cir, Circuit):
@@ -265,8 +273,10 @@ class Ansatz:
         Examples:
             >>> ansatz.assign_parameters({"theta": 0.5, "phi": 0.3})
         """
-        self._bindings = bindings
-        self._assigned_cir = self._circuit.assign_parameters(bindings)
+        normalized = {str(key): value for key, value in bindings.items()}
+        assigned = self._circuit.assign_parameters(normalized)
+        self._bindings = normalized
+        self._assigned_cir = assigned
 
     def _assigned_value(self) -> bool:
         """Check if all parameters have been assigned."""
@@ -289,18 +299,20 @@ class Ansatz:
         circuits = []
         # Parameters need to be updated
         if X is None:
-            # random initialization
+            self._updatable = True
+            # Preserve existing bindings when the circuit has been extended.
             if not self._assigned_value():
                 keys = self.symbols
-                values = np.random.randn(len(self.symbols))
-                self._bindings = dict(zip(keys, values))
+                previous = self._bindings or {}
+                self._bindings = {key: previous[key] if key in previous else np.random.randn()
+                                  for key in keys}
                 self._assigned_cir = self._circuit.assign_parameters(self._bindings)
             # encoder + ansatz
             if self._encoder is not None:
                 for enc_cir in self._encoder:
                     enc_cir_gate = enc_cir.to_gate("enc_cir")
                     enc_cir_copy = Circuit(enc_cir.num_qubits)
-                    enc_cir_copy.append(enc_cir_gate, list(range(enc_cir.num_qubits)))
+                    enc_cir_copy.append_circuit_gate(enc_cir_gate, list(range(enc_cir.num_qubits)))
                     enc_cir_copy.compose(self._assigned_cir)
                     circuits.append(enc_cir_copy)
             else:
@@ -323,7 +335,7 @@ class Ansatz:
                     assigned_cir = self._circuit.assign_parameters(bindings)
                     enc_cir_gate = enc_cir.to_gate("enc_cir")
                     enc_cir_copy = Circuit(enc_cir.num_qubits)
-                    enc_cir_copy.append(enc_cir_gate, list(range(enc_cir.num_qubits)))
+                    enc_cir_copy.append_circuit_gate(enc_cir_gate, list(range(enc_cir.num_qubits)))
                     enc_cir_copy.compose(assigned_cir)
                     circuits.append(enc_cir_copy)
                     bindings_list.append(bindings)
@@ -350,6 +362,8 @@ class Ansatz:
         Returns:
             np.ndarray: Expectation values.
         """
+        self._gradients = {}
+        self._jacobian = {}
         n_circuits = len(circuits)
         n_states = quantum_state.shape[0] if quantum_state is not None else 0
         if not (n_circuits == n_states or n_states in [0, 1] or n_circuits == 1):
@@ -367,13 +381,25 @@ class Ansatz:
             else:
                 exps, sv = self._get_expectations(cir, self._hams, state_vector)
             expectations.append(exps)
-            if self._trainable:
-                self._bwd(sv) if self._updatable else self._bwd(sv, bindings_list[i])
+            if self._retain_derived and self.symbols and (self._trainable or not self._updatable):
+                binding = bindings_list[i] if len(bindings_list) == n else bindings_list[0]
+                initial = state_vector
+                if isinstance(self._differentiator, ParameterShiftDifferentiator) and self._encoder is not None:
+                    prepared = (Statevector(self.num_qubits) if initial is None else
+                                Statevector.from_state(self.num_qubits, initial))
+                    encoder = self._encoder[i] if len(self._encoder) == n else self._encoder[0]
+                    prepared.apply_circuit(encoder)
+                    initial = prepared.data
+                self._bwd(sv, binding, initial)
 
-        return expectations[0] if len(expectations) == 0 else np.array(expectations)
+        if not expectations:
+            raise ValueError("Circuit batch must not be empty.")
+        self._jacobian = {key: value.copy() for key, value in self._gradients.items()}
+        return np.array(expectations)
 
     def forward(
-        self, X: Optional[np.ndarray] = None, quantum_state: Optional[np.ndarray] = None
+        self, X: Optional[np.ndarray] = None, quantum_state: Optional[np.ndarray] = None,
+        *, retain_derived: bool = True
     ) -> Union[float, np.ndarray]:
         """
         Perform forward propagation for one step.
@@ -386,6 +412,8 @@ class Ansatz:
                 If None, uses random initialization. Defaults to None.
             quantum_state (np.ndarray, optional): Initial quantum state vector.
                 Defaults to None (|0⟩ state).
+            retain_derived (bool): Retain the forward Jacobian for backward.
+                False clears prior training state without changing freeze status.
 
         Returns:
             Union[float, np.ndarray]: Expectation values of the measurements.
@@ -404,6 +432,11 @@ class Ansatz:
             >>> ansatz.assign_parameters({"theta": 0.5})
             >>> result = ansatz.forward()
         """
+        self._forward_valid = False
+        self._gradient_valid = False
+        self._retain_derived = retain_derived
+        if not retain_derived:
+            self._invalidate_gradients()
         if len(self) == 0:
             raise ValueError("The circuit must be initialized.")
         if self._differentiator is None:
@@ -414,9 +447,11 @@ class Ansatz:
             quantum_state = self._validate_vectors(quantum_state, self.num_qubits)
         circuits, bindings_list = self._get_fwd_circuits(X)
         expectations = self._fwd(circuits, quantum_state, bindings_list)
+        self._forward_valid = retain_derived
         return expectations
 
-    def _bwd(self, sv: np.ndarray, bindings: Optional[Dict] = None) -> None:
+    def _bwd(self, sv: np.ndarray, bindings: Optional[Dict] = None,
+             initial_state: Optional[np.ndarray] = None) -> None:
         """
         Compute gradients using the differentiator.
 
@@ -428,7 +463,8 @@ class Ansatz:
         if isinstance(self._differentiator, AdjointDifferentiator):
             grads = self._differentiator.run(self._circuit, bindings, sv, self._readouts, self._hams)
         else:
-            grads = self._differentiator.run(self._circuit, bindings, self._readouts, self._hams)
+            grads = self._differentiator.run(self._circuit, bindings, self._readouts, self._hams,
+                                             initial_state=initial_state)
         if len(self._gradients) == 0:
             self._gradients = grads.copy()
         else:
@@ -440,7 +476,9 @@ class Ansatz:
         Perform backward propagation for one step.
 
         This method computes the gradients of the loss with respect to the
-        trainable parameters or inputs.
+        trainable parameters or inputs. Repeated calls reuse the forward
+        Jacobian and replace the previous loss gradients; they do not accumulate.
+        zero_grad clears both the Jacobian and loss gradients.
 
         Args:
             dLdexp (Union[float, np.ndarray], optional): Gradients of the loss
@@ -465,10 +503,14 @@ class Ansatz:
             >>> # Backward pass
             >>> ansatz.backward(loss_fun.grads())
         """
-        if not self._trainable:
+        if not self._forward_valid:
+            raise ValueError("No gradients available; run forward in training mode before backward")
+        if not self._trainable and self._updatable:
             raise ValueError("Ansatz is frozen.")
         if dLdexp is None:
             return self._gradients
+        if not self.symbols:
+            return {} if self._updatable else np.empty((np.shape(dLdexp)[0], 0))
         else:
             if isinstance(dLdexp, numbers.Number):
                 dLdexp = np.array([dLdexp])
@@ -480,13 +522,17 @@ class Ansatz:
                 raise ValueError(
                     f"Gradient dimension {dLdexp.shape[1]} does not match output dimension {self._out_dim}."
                 )
-            expected_batch_size = len(self._encoder) if self._encoder is not None else 1
+            if not self._jacobian:
+                raise ValueError("No gradients available; run forward after zero_grad before backward.")
+            first_gradient = next(iter(self._jacobian.values()))
+            expected_batch_size = 1 if first_gradient.ndim == 1 else first_gradient.shape[0]
             if dLdexp.shape[0] != expected_batch_size:
                 raise ValueError(
                     f"Gradient batch size {dLdexp.shape[0]} does not match encoding batch {expected_batch_size}."
                 )
 
-            for key, val in self._gradients.items():
+            self._gradient_valid = True
+            for key, val in self._jacobian.items():
                 if val.ndim == 1:
                     val = val.reshape(1, -1)
                 if val.shape != dLdexp.shape:
@@ -498,13 +544,7 @@ class Ansatz:
             if self._updatable:
                 return self._gradients
             else:
-                gradients = None
-                for val in self._gradients.values():
-                    if gradients is None:
-                        gradients = val.copy()
-                    else:
-                        gradients = np.column_stack((gradients, val))
-                return gradients
+                return np.column_stack(list(self._gradients.values()))
 
     def set_differentiator(self, differentiator: str = "adjoint", shift: float = np.pi / 2) -> None:
         """
@@ -557,13 +597,17 @@ class Ansatz:
         if not self._updatable:
             raise ValueError("The ansatz update is frozen.")
         self._optimizer = OptimizerInitializer(optimizer)()
+        # Each component owns its state; stable parameter keys must not collide
+        # when the same optimizer configuration is supplied to several layers.
+        if isinstance(optimizer, OptimizerBase):
+            self._optimizer = self._optimizer.copy()
 
     def set_measurement(self, **kwargs) -> None:
         """
         Set the measurement for the model.
 
-        Either `readouts` or `hams` must be provided. If both are provided,
-        `readouts` takes precedence.
+        Exactly one of `readouts` or `hams` must be provided.
+        Setting either replaces the previous measurement mode.
 
         Args:
             readouts (Union[int, list]): Qubit indices for Pauli-Z measurement.
@@ -589,8 +633,10 @@ class Ansatz:
         kwargs_val = list(kwargs.values())[0]
         if kwargs_key == "readouts":
             self._readouts = self._validate_readouts(kwargs_val)
+            self._hams = None
         elif kwargs_key == "hams":
             self._hams = self._validate_hamiltonians(kwargs_val)
+            self._readouts = None
         else:
             raise ValueError(f"Expected 'readouts' or 'hams', got {kwargs_key}.")
 
@@ -606,7 +652,14 @@ class Ansatz:
         """Reset the gradients of parameters to zero."""
         if not self._trainable:
             raise ValueError("Ansatz is frozen.")
+        self._invalidate_gradients()
+
+    def _invalidate_gradients(self):
+        """Discard training state without changing persistent freeze status."""
+        self._forward_valid = False
+        self._gradient_valid = False
         self._gradients = {}
+        self._jacobian = {}
 
     def update(self, cur_loss: Optional[float] = None) -> None:
         """
@@ -626,11 +679,13 @@ class Ansatz:
         """
         if not (self._trainable and self._updatable):
             raise ValueError("Ansatz is frozen.")
+        if not self._gradient_valid:
+            return
         self._optimizer.step()
-        new_params = {}
+        new_params = dict(self._bindings)
         for k, v in self._gradients.items():
-            if Parameter(k) in self.parameters:
-                unique_key = f"{id(self)}_{k}"
+            if k in self.symbols:
+                unique_key = k
                 new_params[k] = self._optimizer(self._bindings[k], v, unique_key, cur_loss)
         self.assign_parameters(new_params)
 
@@ -670,11 +725,37 @@ class Ansatz:
             raise ValueError("The output dimensions to be loaded do not match.")
         if len(self) == 0:
             self._load_circuit(summary_dict["circuit"])
+        else:
+            saved_circuit = summary_dict["circuit"]
+            if saved_circuit["num_qubits"] != self.num_qubits:
+                raise ValueError("The loaded circuit does not match the current width.")
+            # Compare the canonical decomposed operations, including symbolic
+            # expressions and custom matrices, before changing any bindings.
+            restored = Ansatz(self.num_qubits)
+            restored._load_circuit(saved_circuit)
+            current_gates = self._circuit_summary()["gates"]
+            saved_gates = restored._circuit_summary()["gates"]
+            if not self._same_structure(current_gates, saved_gates):
+                raise ValueError("Checkpoint circuit structure does not match the current circuit.")
+            bindings = saved_circuit["parameters"]
+            if bindings is not None:
+                if set(bindings) != set(self.symbols):
+                    raise ValueError("Checkpoint parameter symbols do not match the current circuit.")
+                self.assign_parameters(bindings)
 
         readouts = summary_dict["readouts"]
         hams = summary_dict["hamiltonians"]
-        if self._readouts is not None and self._hams is not None:
-            ValueError("Both readouts and hamiltonians are provided, readouts will be used first.")
+        if hams is not None:
+            decoded = []
+            for item in hams:
+                if isinstance(item, Hamiltonian):  # Legacy in-memory summaries.
+                    decoded.append(item)
+                else:
+                    ham = Hamiltonian(item["num_qubits"])
+                    for pauli, coefficient in item["terms"]:
+                        ham.add_term(PauliString.from_str(pauli), coefficient)
+                    decoded.append(ham)
+            hams = decoded
         if readouts is not None:
             self.set_measurement(readouts=readouts)
         elif hams is not None:
@@ -685,43 +766,66 @@ class Ansatz:
         optim = summary_dict["optimizer"]
         if optim is not None:
             self.set_optimizer(optim)
+        self._invalidate_gradients()
 
     def _circuit_summary(self) -> dict:
-        """Generate a summary of the circuit structure."""
+        """Serialize canonical decomposed operations using only Python/NumPy values."""
         if len(self) == 0:
             return {}
         gates = []
-        for op in self.operations:
+        for op in self._circuit.decompose().operations:
             instruction = op.instruction
             gate_info = {}
             gate_info["qubits"] = [qubit.index for qubit in op.qubits]
             gate_info["num_qubits"] = op.num_qubits
             params = []
             for param in op.params:
-                if isinstance(param, tuple):
-                    param_name = str(self.parameters[param[1]])
-                    params.append(param_name)
+                if isinstance(param, Parameter):
+                    params.append(str(param))
                 else:
                     params.append(param)
             gate_info["params"] = params
 
             if instruction.is_standard:
                 gate_info["type"] = "standard"
-                gate_info["name"] = str(instruction.standard_gate)
+                gate_info["name"] = str(instruction.standard_gate).split(".")[-1]
             elif instruction.is_mcgate:
-                mc_gate = instruction.mc_gate
                 gate_info["type"] = "mcgate"
-                gate_info["base_gate"] = str(mc_gate.base_gate)
-                gate_info["num_ctrl_qubits"] = mc_gate.num_ctrl_qubits
+                mc_gate = getattr(instruction, "mc_gate", None)
+                if mc_gate is not None:
+                    gate_info["base_gate"] = str(mc_gate.base_gate).split(".")[-1].split("(")[0]
+                    gate_info["num_ctrl_qubits"] = mc_gate.num_ctrl_qubits
+                else:
+                    # Older cqlib bindings only expose the "C<num_ctrl>-<BASE>" name.
+                    ctrl_part, base_name = instruction.name.split("-", 1)
+                    gate_info["base_gate"] = base_name
+                    gate_info["num_ctrl_qubits"] = int(ctrl_part[1:])
             elif instruction.is_unitary:
-                unitary_gate = instruction.unitary_gate
                 gate_info["type"] = "unitary"
-                gate_info["label"] = unitary_gate.label
-                gate_info["matrix"] = unitary_gate.matrix
+                gate_info["label"] = instruction.name
+                gate_info["matrix"] = op.matrix()
+            elif instruction.is_directive:
+                gate_info["type"] = "directive"
+                gate_info["name"] = instruction.directive.name()
             else:
-                pass
+                raise ValueError(f"Unsupported checkpoint instruction: {instruction.name}")
             gates.append(gate_info)
         return {"num_qubits": self.num_qubits, "parameters": self._bindings, "gates": gates}
+
+    @staticmethod
+    def _same_structure(left, right):
+        if len(left) != len(right):
+            return False
+        for a, b in zip(left, right):
+            if a.keys() != b.keys():
+                return False
+            for key in a:
+                if key == "matrix":
+                    if not np.array_equal(a[key], b[key]):
+                        return False
+                elif a[key] != b[key]:
+                    return False
+        return True
 
     def _load_circuit(self, cir_summary: dict) -> None:
         """Load a circuit from a summary dictionary."""
@@ -743,16 +847,21 @@ class Ansatz:
                 gate_params.append(param)
             gate_type = gate_info["type"]
             if gate_type == "standard":
-                instruction = getattr(StandardGate, gate_info["name"].upper())
+                instruction = StandardGate.from_name(gate_info["name"])
             elif gate_type == "mcgate":
-                base_gate = getattr(StandardGate, gate_info["base_gate"].upper())
+                base_gate = StandardGate.from_name(gate_info["base_gate"])
                 num_ctrl_qubits = gate_info["num_ctrl_qubits"]
                 instruction = MCGate(num_ctrl_qubits, base_gate)
-            else:
+            elif gate_type == "directive":
+                instruction = Instruction.from_directive(getattr(Directive, gate_info["name"])())
+            elif gate_type == "unitary":
                 instruction = UnitaryGate(gate_info["label"], gate_num_qubits).with_matrix(gate_info["matrix"])
+            else:
+                raise ValueError(f"Unsupported checkpoint gate type: {gate_type}")
             self.append(instruction, gate_qubits, gate_params)
         parameters = cir_summary["parameters"]
-        self.assign_parameters(parameters)
+        if parameters is not None:
+            self.assign_parameters(parameters)
 
     def _validate_hamiltonians(self, hams):
         """Validate and format Hamiltonians."""
@@ -796,6 +905,9 @@ class Ansatz:
 
     def _validate_vectors(self, vectors: np.ndarray, n_qubits: int) -> np.ndarray:
         """Validate quantum state vectors."""
+        vectors = np.asarray(vectors, dtype=np.complex128)
+        if vectors.ndim not in (1, 2):
+            raise ValueError("Expected a state vector or batch of state vectors.")
         if vectors.ndim == 1:
             vectors = vectors.reshape(1, -1)
         if vectors.shape[1] != 1 << n_qubits:
@@ -818,7 +930,25 @@ class Ansatz:
             params: Optional parameters for the instruction.
             label: Optional operation label.
         """
-        self._circuit.append(instruction, qubits, params, label)
+        qubit_objs = [self._circuit.qubits[q] if isinstance(q, int) else q for q in qubits]
+        if isinstance(instruction, MCGate):
+            gate = instruction
+            if params:
+                gate = MCGate(gate.num_ctrl_qubits, gate.base_gate(*params))
+            operation = ValueOperation.from_mc_gate(gate, qubit_objs, label)
+        elif isinstance(instruction, StandardGate):
+            gate = instruction(*params) if params else instruction
+            operation = ValueOperation.from_standard_gate(gate, qubit_objs, label)
+        elif isinstance(instruction, UnitaryGate):
+            operation = ValueOperation.from_instruction(
+                Instruction.from_unitary_gate(instruction), qubit_objs, params, label
+            )
+        elif isinstance(instruction, Instruction):
+            operation = ValueOperation.from_instruction(instruction, qubit_objs, params, label)
+        else:
+            raise TypeError(f"Unsupported instruction type: {type(instruction).__name__}")
+        self._circuit.append(operation)
+        self._assigned_cir = None
 
     def multi_control_gate(
         self,
@@ -827,89 +957,109 @@ class Ansatz:
         params: Optional[list[float | Parameter]] = None,
     ) -> None:
         """Append a multi-controlled gate to the circuit."""
-        self._circuit.multi_control_gate(instruction, qubits, params)
+        self.append(instruction, qubits, params)
 
     # Standard single-qubit gates
     def i(self, qubit: int | Qubit) -> None:
         """Append an Identity (I) gate."""
         self._circuit.i(qubit)
+        self._assigned_cir = None
 
     def h(self, qubit: int | Qubit) -> None:
         """Append a Hadamard (H) gate."""
         self._circuit.h(qubit)
+        self._assigned_cir = None
 
     def x(self, qubit: int | Qubit) -> None:
         """Append a Pauli-X (NOT) gate."""
         self._circuit.x(qubit)
+        self._assigned_cir = None
 
     def y(self, qubit: int | Qubit) -> None:
         """Append a Pauli-Y gate."""
         self._circuit.y(qubit)
+        self._assigned_cir = None
 
     def z(self, qubit: int | Qubit) -> None:
         """Append a Pauli-Z gate."""
         self._circuit.z(qubit)
+        self._assigned_cir = None
 
     def s(self, qubit: int | Qubit) -> None:
         """Append an S (Phase) gate."""
         self._circuit.s(qubit)
+        self._assigned_cir = None
 
     def sdg(self, qubit: int | Qubit) -> None:
         """Append an S-dagger (S†) gate."""
         self._circuit.sdg(qubit)
+        self._assigned_cir = None
 
     def t(self, qubit: int | Qubit) -> None:
         """Append a T gate."""
         self._circuit.t(qubit)
+        self._assigned_cir = None
 
     def tdg(self, qubit: int | Qubit) -> None:
         """Append a T-dagger (T†) gate."""
         self._circuit.tdg(qubit)
+        self._assigned_cir = None
 
     def x2p(self, qubit: int | Qubit) -> None:
         """Append a √X (SX) gate."""
         self._circuit.x2p(qubit)
+        self._assigned_cir = None
 
     def x2m(self, qubit: int | Qubit) -> None:
         """Append a √X† (SXdg) gate."""
         self._circuit.x2m(qubit)
+        self._assigned_cir = None
 
     def y2p(self, qubit: int | Qubit) -> None:
         """Append a √Y gate."""
         self._circuit.y2p(qubit)
+        self._assigned_cir = None
 
     def y2m(self, qubit: int | Qubit) -> None:
         """Append a √Y† gate."""
         self._circuit.y2m(qubit)
+        self._assigned_cir = None
 
     # Rotation gates
     def rx(self, qubit: int | Qubit, theta: float | Parameter) -> None:
         """Append a rotation around the X-axis by angle theta."""
         self._circuit.rx(qubit, theta)
+        self._assigned_cir = None
 
     def ry(self, qubit: int | Qubit, theta: float | Parameter) -> None:
         """Append a rotation around the Y-axis by angle theta."""
         self._circuit.ry(qubit, theta)
+        self._assigned_cir = None
 
     def rz(self, qubit: int | Qubit, theta: float | Parameter) -> None:
         """Append a rotation around the Z-axis by angle theta."""
         self._circuit.rz(qubit, theta)
+        self._assigned_cir = None
 
     def phase(self, qubit: int | Qubit, lambda_: float | Parameter) -> None:
         """Append a Phase gate (P gate)."""
         self._circuit.phase(qubit, lambda_)
+        self._assigned_cir = None
 
     def xy(self, qubit: int | Qubit, theta: float | Parameter) -> None:
         """Append an XY gate."""
         self._circuit.xy(qubit, theta)
+        self._assigned_cir = None
 
     def xy2p(self, qubit: int | Qubit, theta: float | Parameter) -> None:
         """Append a √XY gate (positive phase)."""
         self._circuit.xy2p(qubit, theta)
+        self._assigned_cir = None
 
     def xy2m(self, qubit: int | Qubit, theta: float | Parameter) -> None:
         """Append a √XY† gate (negative phase)."""
         self._circuit.xy2m(qubit, theta)
+        self._assigned_cir = None
 
     def u(
         self,
@@ -920,43 +1070,53 @@ class Ansatz:
     ) -> None:
         """Append a generic single-qubit rotation U(theta, phi, lambda)."""
         self._circuit.u(qubit, theta, phi, lambda_)
+        self._assigned_cir = None
 
     def rxy(self, qubit: int | Qubit, theta: float | Parameter, phi: float | Parameter) -> None:
         """Append a rotation in the XY plane."""
         self._circuit.rxy(qubit, theta, phi)
+        self._assigned_cir = None
 
     # Two-qubit gates
     def cx(self, control: int | Qubit, target: int | Qubit) -> None:
         """Append a Controlled-NOT (CNOT) gate."""
         self._circuit.cx(control, target)
+        self._assigned_cir = None
 
     def cy(self, control: int | Qubit, target: int | Qubit) -> None:
         """Append a Controlled-Y gate."""
         self._circuit.cy(control, target)
+        self._assigned_cir = None
 
     def cz(self, control: int | Qubit, target: int | Qubit) -> None:
         """Append a Controlled-Z gate."""
         self._circuit.cz(control, target)
+        self._assigned_cir = None
 
     def swap(self, a: int | Qubit, b: int | Qubit) -> None:
         """Append a SWAP gate."""
         self._circuit.swap(a, b)
+        self._assigned_cir = None
 
     def rxx(self, a: int | Qubit, b: int | Qubit, theta: float | Parameter) -> None:
         """Append an Ising XX coupling gate."""
         self._circuit.rxx(a, b, theta)
+        self._assigned_cir = None
 
     def ryy(self, a: int | Qubit, b: int | Qubit, theta: float | Parameter) -> None:
         """Append an Ising YY coupling gate."""
         self._circuit.ryy(a, b, theta)
+        self._assigned_cir = None
 
     def rzz(self, a: int | Qubit, b: int | Qubit, theta: float | Parameter) -> None:
         """Append an Ising ZZ coupling gate."""
         self._circuit.rzz(a, b, theta)
+        self._assigned_cir = None
 
     def rzx(self, a: int | Qubit, b: int | Qubit, theta: float | Parameter) -> None:
         """Append an Ising ZX coupling gate."""
         self._circuit.rzx(a, b, theta)
+        self._assigned_cir = None
 
     def fsim(
         self,
@@ -967,24 +1127,29 @@ class Ansatz:
     ) -> None:
         """Append a Fermionic Simulation gate (fSim)."""
         self._circuit.fsim(a, b, theta, phi)
+        self._assigned_cir = None
 
     # Controlled rotation gates
     def crx(self, control: int | Qubit, target: int | Qubit, theta: float | Parameter) -> None:
         """Append a Controlled-RX gate."""
         self._circuit.crx(control, target, theta)
+        self._assigned_cir = None
 
     def cry(self, control: int | Qubit, target: int | Qubit, theta: float | Parameter) -> None:
         """Append a Controlled-RY gate."""
         self._circuit.cry(control, target, theta)
+        self._assigned_cir = None
 
     def crz(self, control: int | Qubit, target: int | Qubit, theta: float | Parameter) -> None:
         """Append a Controlled-RZ gate."""
         self._circuit.crz(control, target, theta)
+        self._assigned_cir = None
 
     # Multi-qubit gates
     def ccx(self, control1: int | Qubit, control2: int | Qubit, target: int | Qubit) -> None:
         """Append a Toffoli gate (CCX)."""
         self._circuit.ccx(control1, control2, target)
+        self._assigned_cir = None
 
     def multi_control(
         self,
@@ -994,11 +1159,16 @@ class Ansatz:
         params: Optional[list[float | Parameter]] = None,
     ) -> None:
         """Append a multi-controlled version of a standard gate."""
-        self._circuit.multi_control(instruction, controls, targets, params)
+        self._circuit.append_mc_gate(
+            MCGate(len(controls), instruction(*params) if params is not None else instruction),
+            controls + targets,
+        )
+        self._assigned_cir = None
 
     def unitary(self, gate: UnitaryGate, qubits: list[int] | list[Qubit]) -> None:
         """Append a custom unitary gate to the circuit."""
-        self._circuit.unitary(gate, qubits)
+        self._circuit.append_unitary_gate(gate, qubits)
+        self._assigned_cir = None
 
     def decompose(self) -> "Circuit":
         """Decompose the circuit into simpler operations."""
@@ -1019,7 +1189,21 @@ class Ansatz:
     def add_qubits(self, qubits: list[int]) -> None:
         """Add additional qubits to the circuit."""
         self._circuit.add_qubits(qubits)
+        self._assigned_cir = None
 
     def add_parameter(self, param: Parameter) -> tuple[int, bool]:
-        """Add a parameter to the circuit."""
-        return self._circuit.add_parameter(param)
+        """Register a parameter name for legacy callers.
+
+        cqlib 2 discovers circuit parameters when gates are appended; this
+        registration alone does not add an unused trainable circuit parameter.
+        The returned index refers to the legacy registration list, not the
+        order of circuit.parameters.
+        """
+        if not isinstance(param, Parameter):
+            raise TypeError("param must be a Parameter")
+        registered = getattr(self, "_registered_parameters", list(self.parameters))
+        added = param not in registered
+        if added:
+            registered.append(param)
+        self._registered_parameters = registered
+        return registered.index(param), added

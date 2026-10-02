@@ -12,9 +12,11 @@ References:
     - Chen, S. et al. (2021). "Adjoint method for quantum circuits"
 
 Examples:
+    >>> import numpy as np
     >>> from cqlib_qml.differentiator import AdjointDifferentiator
     >>> from cqlib.circuit import Circuit, Parameter
     >>> from cqlib.qis import Hamiltonian, PauliString
+    >>> from cqlib.qis.state import Statevector
     >>>
     >>> # Setup circuit
     >>> circuit = Circuit(1)
@@ -25,11 +27,17 @@ Examples:
     >>> ham = Hamiltonian(1)
     >>> ham.add_term(PauliString.from_str("Z"), 1)
     >>>
+    >>> # Forward pass: simulate the assigned circuit from |0> to get
+    >>> # the final state vector
+    >>> bindings = {"theta": 0.5}
+    >>> assigned = circuit.assign_parameters(bindings)
+    >>> sv = Statevector(1)
+    >>> sv.apply_circuit(assigned)
+    >>>
     >>> # Compute gradients
     >>> diff = AdjointDifferentiator()
-    >>> state_vector = np.array([1.0, 0.0])
-    >>> grads = diff.run(circuit, {"theta": 0.5},
-    ...                  state_vector=state_vector,
+    >>> grads = diff.run(circuit, bindings,
+    ...                  state_vector=sv.data,
     ...                  hamiltonians=[ham])
     >>> print(grads)
     {'theta': array([-0.47942554])}
@@ -39,6 +47,7 @@ import numpy as np
 from typing import List, Dict, Union, Optional
 
 from cqlib_qml.utils import grad_matrix
+from cqlib_qml._numerics import scaled_vector
 from cqlib.circuit import Circuit, Parameter
 from cqlib.qis import Hamiltonian, PauliString, Pauli
 from cqlib.qis.state import Statevector
@@ -117,7 +126,8 @@ class AdjointDifferentiator:
 
         Raises:
             ValueError: If circuit has no parameters or parameters are
-                not properly assigned.
+                not properly assigned, the final state is missing or invalid,
+                or the circuit contains measurement/reset or classical operations.
             TypeError: If hamiltonians or readouts have invalid types.
 
         Examples:
@@ -131,11 +141,27 @@ class AdjointDifferentiator:
             ...                  state_vector=state_vector,
             ...                  hamiltonians=[ham])
         """
+        bindings = {str(key): value for key, value in bindings.items()}
         circuit = circuit.decompose()
         if len(circuit.parameters) == 0:
             raise ValueError("The input circuit must be a parameterized quantum circuit.")
         if set(circuit.symbols) != set(bindings.keys()):
             raise ValueError("All parameters in the circuit must be assigned.")
+        if state_vector is None:
+            raise ValueError("state_vector is required: pass the final state from the forward circuit.")
+        state_vector = np.asarray(state_vector, dtype=np.complex128)
+        if state_vector.shape != (1 << circuit.num_qubits,):
+            raise ValueError("state_vector dimension does not match the circuit.")
+        if not np.all(np.isfinite(state_vector)):
+            raise ValueError("state_vector must contain only finite values.")
+        for op in circuit.operations:
+            instruction = op.instruction
+            if (instruction.is_classical_data or instruction.is_classical_control
+                    or (instruction.is_directive and instruction.directive.is_reset())):
+                raise ValueError(
+                    "Adjoint differentiation requires unitary evolution; "
+                    "measurement, reset and classical operations are unsupported."
+                )
         try:
             assigned_cir = circuit.assign_parameters(bindings)
         except:
@@ -201,6 +227,8 @@ class AdjointDifferentiator:
         # Calculate d(L)/d(|psi_t>)
         grad = self._initial_grad_vector(state, n_qubits, hamiltonian)
         grad_vector = self._norm_grad_vector(n_qubits, grad)
+        if self._grad_norm == 0:
+            return grads_dict
 
         for idx in range(len(pipeline["qubits"])):
             if remain_training_gates == 0:
@@ -212,7 +240,7 @@ class AdjointDifferentiator:
 
             # Calculate d(L)/d(theta) and write to grads_dict
             params = pipeline["params"][idx]
-            if any(isinstance(param, Parameter) for param in params):
+            if pipeline["training_gate"][idx]:
                 remain_training_gates -= 1
                 grad_matrix = pipeline["grad_matrix"][idx]
                 grads_dict = self._calculate_grad(
@@ -235,23 +263,19 @@ class AdjointDifferentiator:
         Returns:
             Statevector: Normalized gradient vector as a quantum state.
         """
-        self._grad_norm = np.linalg.norm(grad)
-        if self._grad_norm < 1e-12:
+        if not np.all(np.isfinite(grad)):
+            raise ValueError("Hamiltonian action must have finite components.")
+        scaled, scale = scaled_vector(grad)
+        if scale == 0:
+            self._grad_norm = 0.0
             return Statevector(n_qubits)
-
-        grad_normalized = grad / self._grad_norm
-        try:
-            grad_vector = Statevector.from_state(n_qubits, grad_normalized)
-        except ValueError as e:
-            if "not normalized" in str(e):
-                current_norm = np.linalg.norm(grad_normalized)
-                if abs(current_norm - 1.0) > 1e-8:
-                    grad_normalized = grad_normalized / current_norm
-                grad_vector = Statevector.from_state(n_qubits, grad_normalized)
-            else:
-                raise ValueError
-
-        return grad_vector
+        # Normalize at unit scale: squaring the original components can
+        # underflow or overflow even when the vector and its norm are finite.
+        scaled_norm = np.linalg.norm(scaled)
+        self._grad_norm = scale * scaled_norm
+        if not np.isfinite(self._grad_norm):
+            raise ValueError("Hamiltonian action norm exceeds floating-point range.")
+        return Statevector.from_state(n_qubits, scaled / scaled_norm)
 
     def _check_hamiltonians(self, hams) -> List[Hamiltonian]:
         """
@@ -270,7 +294,6 @@ class AdjointDifferentiator:
             hams = [hams]
         if isinstance(hams, list):
             for i in range(len(hams)):
-                hams[i].simplify()
                 if not isinstance(hams[i], Hamiltonian):
                     raise TypeError(f"Expected Hamiltonian, got {type(hams[i]).__name__}")
         else:
@@ -333,23 +356,31 @@ class AdjointDifferentiator:
         """
         pipeline = {"qubits": [], "grad_matrix": [], "training_gate": [], "params": [], "inv_op": []}
         training_gates = 0
-        inv_circuit = assigned_cir.inverse()
+        assigned_ops = [op for op in list(assigned_cir.operations)[::-1]
+                        if not op.instruction.is_directive]
+        if any(op.instruction.is_unitary for op in assigned_ops):
+            # cqlib 2.0b3 does not implement inverse() for custom unitary
+            # instructions. Their numeric matrices still have a valid adjoint.
+            inverse_ops = [op.matrix().conj().T for op in assigned_ops]
+        else:
+            inverse_ops = [op for op in assigned_cir.inverse().operations
+                           if not op.instruction.is_directive]
         for op, origion_op, inv_op in zip(
-            list(assigned_cir.operations)[::-1], list(circuit.operations)[::-1], inv_circuit.operations
+            assigned_ops, [op for op in list(circuit.operations)[::-1]
+                           if not op.instruction.is_directive], inverse_ops
         ):
             if op.instruction.instruction_type in ["circuit", "directive"]:
                 continue
             pipeline["qubits"].append([qubit.index for qubit in op.qubits])
-            pipeline["grad_matrix"].append(op.grad_matrix())
+            pipeline["grad_matrix"].append(
+                grad_matrix(op) if any(isinstance(p, Parameter) and p.symbols for p in origion_op.params) else None
+            )
             params = []
             is_training_gate = False
             for param in origion_op.params:
-                if isinstance(param, tuple):
-                    param_name = circuit.parameters[param[1]]
-                    params.append(param_name)
+                if isinstance(param, Parameter) and param.symbols:
                     is_training_gate = True
-                else:
-                    params.append(param)
+                params.append(param)
             if is_training_gate:
                 training_gates += 1
             pipeline["training_gate"].append(is_training_gate)
@@ -369,11 +400,12 @@ class AdjointDifferentiator:
         Returns:
             tuple: (coefficients, circuit_list)
         """
-        hamiltonian.simplify()
         coefficients = []
         circuit_list = []
         for pauli_str, coeff in hamiltonian.terms:
-            coefficients.append(coeff)
+            # Pauli gates below omit the string's global phase. Preserve it
+            # explicitly without simplify(), which also prunes small terms.
+            coefficients.append(coeff * pauli_str.phase.to_complex())
             circuit = Circuit(n_qubits)
             for idx in range(pauli_str.num_qubits):
                 if pauli_str.get_pauli(idx) == Pauli.x():
@@ -420,10 +452,12 @@ class AdjointDifferentiator:
         Raises:
             ValueError: If operation type is unsupported.
         """
-        if op.instruction.standard_gate:
+        if isinstance(op, np.ndarray):
+            vector.apply_unitary_gate(qubits, op)
+        elif op.instruction.standard_gate:
             inv_gate = op.instruction.standard_gate
             vector.apply_standard_gate(inv_gate, qubits, op.params)
-        elif op.instruction.mc_gate or op.instruction.unitary_gate:
+        elif op.is_mcgate or op.is_unitary:
             vector.apply_unitary_gate(qubits, op.matrix())
         else:
             raise ValueError(f"Unsupported operation type: {op.instruction.instruction_type}")

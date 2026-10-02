@@ -11,7 +11,10 @@ but may also be useful for advanced users extending the library.
 
 Available Utilities:
     - grad_matrix: Gradient matrix computation for quantum gates
-    - ValueOperation extensions: Monkey-patched methods for gradient calculation
+
+Note:
+    Importing this module does not modify cqlib classes. Replace legacy
+    ``op.grad_matrix()`` calls with the explicit ``grad_matrix(op)`` helper.
 
 Examples:
     >>> from cqlib_qml.utils import grad_matrix
@@ -24,7 +27,7 @@ Examples:
     >>>
     >>> # Get gradient matrix for an operation
     >>> op = circuit.operations[0]
-    >>> grad = op.grad_matrix()
+    >>> grad = grad_matrix(op)
 """
 
 from .grad_matrix import grad_matrix

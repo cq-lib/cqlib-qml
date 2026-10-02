@@ -124,3 +124,8 @@ class ImageEncoder(ABC):
                 )
         else:
             raise TypeError(f"Expected list, np.ndarray, or torch.Tensor, " f"got {type(imgs).__name__}.")
+
+    @staticmethod
+    def _as_numpy(img):
+        """Detach Tensor data to CPU; image encoding does not use autograd."""
+        return img.detach().cpu().numpy() if isinstance(img, torch.Tensor) else np.asarray(img)

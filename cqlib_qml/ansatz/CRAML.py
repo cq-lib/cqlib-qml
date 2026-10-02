@@ -17,6 +17,7 @@ Examples:
     >>> ansatz.set_measurement(readouts=[2])
 """
 
+from copy import deepcopy
 from cqlib.circuit import Parameter
 from .ansatz import Ansatz
 
@@ -50,7 +51,7 @@ class CRAML(Ansatz):
 
     Attributes:
         num_qubits (int): Number of qubits.
-        in_dim (int): Number of trainable parameters (2 * n_qubits * layers).
+        in_dim (int): Number of trainable parameters (2 * (n_qubits-2) * layers).
         _layers (int): Number of layers.
 
     Raises:
@@ -59,8 +60,8 @@ class CRAML(Ansatz):
     Examples:
         >>> # For a 2x2 image with FRQI encoding
         >>> ansatz = CRAML(n_qubits=3, layers=2)
-        >>> print(ansatz.in_dim)  # 2 * 3 * 2 = 12 parameters
-        12
+        >>> print(ansatz.in_dim)  # 2 * (3-2) * 2 = 4 parameters
+        4
     """
 
     def __init__(self, n_qubits: int, layers: int):
@@ -103,10 +104,61 @@ class CRAML(Ansatz):
         """
         parameters = []
         for l in range(self._layers):
-            for k in range(0, n_qubits * 2, 2):
-                parameters.append(Parameter(f"params{l}_{k}"))
-                parameters.append(Parameter(f"params{l}_{k + 1}"))
+            for k in range(0, (n_qubits - 2) * 2, 2):
+                # Legacy allocation used 2*n_qubits names per group, while
+                # construction consumed a contiguous prefix of that list.
+                index = l * 2 * (n_qubits - 2) + k
+                legacy_layer, legacy_index = divmod(index, 2 * n_qubits)
+                parameters.append(Parameter(f"params{legacy_layer}_{legacy_index}"))
+                parameters.append(Parameter(f"params{legacy_layer}_{legacy_index + 1}"))
         return parameters
+
+    def load_params(self, summary_dict: dict) -> None:
+        """Migrate original, intermediate, and previously misgrouped symbols.
+
+        Identify the schema from the complete gate structure, including shared
+        parameters, rather than from binding names alone.
+        """
+        count = 2 * (self.num_qubits - 2) * self._layers
+        width = 2 * (self.num_qubits - 2)
+        schemas = [
+            [f"params{i // (2 * self.num_qubits)}_{i % (2 * self.num_qubits)}" for i in range(count)],
+            [f"params{i // width}_{i % width}" for i in range(count)],
+            [f"params{i // (2 * width)}_{i % (2 * width)}" for i in range(count)],
+        ]
+        names = [str(param) for param in self._init_parameters(self.num_qubits)]
+        current = self._circuit_summary()["gates"]
+        saved = Ansatz(self.num_qubits)
+        saved._load_circuit(summary_dict["circuit"])
+        saved_gates = saved._circuit_summary()["gates"]
+        for schema in schemas:
+            reverse = dict(zip(names, schema))
+            expected = deepcopy(current)
+            for gate in expected:
+                gate["params"] = [reverse.get(value, value) if isinstance(value, str) else value
+                                  for value in gate["params"]]
+            if not self._same_structure(expected, saved_gates):
+                continue
+            mapping = dict(zip(schema, names))
+            migrated = deepcopy(summary_dict)
+            bindings = migrated["circuit"]["parameters"]
+            if bindings is not None:
+                if set(bindings) != set(schema):
+                    raise ValueError("Checkpoint parameter symbols do not match the current circuit.")
+                migrated["circuit"]["parameters"] = {mapping[key]: val for key, val in bindings.items()}
+            for gate in migrated["circuit"]["gates"]:
+                gate["params"] = [mapping.get(value, value) if isinstance(value, str) else value
+                                  for value in gate["params"]]
+            optim = migrated.get("optimizer")
+            if optim is not None:
+                cache = {}
+                for key, val in optim.get("cache", {}).items():
+                    prefix, separator, name = key.partition("_")
+                    symbol = name if separator and prefix.isdigit() else key
+                    cache[mapping.get(symbol, symbol)] = val
+                optim["cache"] = cache
+            return super().load_params(migrated)
+        raise ValueError("Checkpoint circuit structure does not match the current circuit.")
 
     def _construct_circuit(self, parameters: list) -> None:
         """
