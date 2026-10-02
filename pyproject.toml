@@ -1,6 +1,6 @@
 [project]
 name = "cqlib-qml"
-version = "0.1.0"
+version = "0.1.0-beta.1"
 description = "Quantum machine learning package based on Cqlib"
 authors = [
     { name = "China Telecom Quantum Group Quantum Computing Team", email = "tianyan@chinatelecom.cn" },
