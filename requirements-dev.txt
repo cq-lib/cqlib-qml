@@ -3,3 +3,5 @@ pre-commit>=3.7.1
 pytest>=8.0.2
 ruff>=0.14.2
 twine>=5.0.0
+setuptools>=80.0
+wheel

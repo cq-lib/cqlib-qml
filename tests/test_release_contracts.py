@@ -275,8 +275,30 @@ assert set(vars(ValueOperation)) == before
     subprocess.run([sys.executable, '-c', code], check=True)
 
 
+def test_sdist_manifest_includes_release_sources():
+    root = Path(__file__).resolve().parents[1]
+    manifest = (root / 'MANIFEST.in').read_text()
+    assert 'recursive-include docs/tutorials *.md' in manifest
+    assert 'recursive-include scripts *.py *.sh' in manifest
 
 
+def test_release_gate_requires_pytest(tmp_path):
+    import os
+    import shutil
+    import subprocess
+    if shutil.which('bash') is None:
+        pytest.skip('bash release wrapper requires bash; wheel validation is portable')
+    root = Path(__file__).resolve().parents[1]
+    scripts = tmp_path / 'scripts'
+    scripts.mkdir()
+    shutil.copy(root / 'scripts/release_check.sh', scripts / 'release_check.sh')
+    python = tmp_path / 'missing-pytest'
+    python.write_text('#!/bin/sh\nif [ "$2" = "pytest" ]; then exit 1; fi\ntouch build-was-attempted\nexit 1\n')
+    python.chmod(0o755)
+    result = subprocess.run(['bash', str(scripts / 'release_check.sh')], env={**os.environ, 'PYTHON': str(python)}, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert 'pytest is required' in result.stdout + result.stderr
+    assert not (tmp_path / 'build-was-attempted').exists()
 
 
 def test_linear_tutorial_gradient_matches_finite_difference():
@@ -360,6 +382,34 @@ def test_equal_classifier_config_keeps_fit(model_type):
     np.testing.assert_array_equal(model.predict(X), before)
 
 
+@pytest.mark.parametrize('installed', [True, False])
+def test_wheel_verifier_distinguishes_checkout_from_local_venv(tmp_path, monkeypatch, installed):
+    import runpy
+    import sys
+    from types import SimpleNamespace
+
+    source = tmp_path / 'checkout'
+    for directory in ['tests', 'docs/tutorials', 'scripts']:
+        (source / directory).mkdir(parents=True)
+    (source / 'MANIFEST.in').write_text('')
+    namespace = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'scripts/verify_wheel.py'))
+    module_path = source / ('.wheel-venv/lib/site-packages/cqlib_qml/__init__.py'
+                            if installed else 'cqlib_qml/__init__.py')
+
+    def run(command, **kwargs):
+        if command[1] == '-c':
+            with monkeypatch.context() as context:
+                context.setitem(sys.modules, 'cqlib_qml', SimpleNamespace(__file__=str(module_path)))
+                exec(command[2], {})
+
+    monkeypatch.setattr(namespace['subprocess'], 'run', run)
+    monkeypatch.setattr(sys, 'argv', ['verify_wheel.py', '--tests', str(source / 'tests'),
+                                    '--tutorials', str(source / 'docs/tutorials')])
+    if installed:
+        namespace['main']()
+    else:
+        with pytest.raises(AssertionError, match='source checkout'):
+            namespace['main']()
 
 
 @pytest.mark.parametrize('name,value', [
