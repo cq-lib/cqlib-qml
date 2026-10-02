@@ -632,3 +632,6 @@ ZZFeatureEncoder 受量子核方法启发，使用 ZZ 纠缠门创建特征空�
 | 方法 | 描述 |
 |------|------|
 | `__call__(data)` | ZZ 特征编码 |
+## 输入契约与 FRQI 亮度
+
+FRQI/NEQR 接受 NumPy 数组和 Tensor；Tensor 会先 detach 并移到 CPU，不保留 torch autograd 关系。FRQI 按每张图像的最大像素值归一化，因此全 0.2 与全 0.8 图像会得到相同量子态；当前默认行为不保存绝对亮度差异。NEQR 接受整数颜色索引。BasisEncoder 接受整数及整数值浮点数组，拒绝空、负数、非整数和非有限输入。

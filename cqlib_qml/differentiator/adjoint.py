@@ -47,6 +47,7 @@ import numpy as np
 from typing import List, Dict, Union, Optional
 
 from cqlib_qml.utils import grad_matrix
+from cqlib_qml._numerics import scaled_vector
 from cqlib.circuit import Circuit, Parameter
 from cqlib.qis import Hamiltonian, PauliString, Pauli
 from cqlib.qis.state import Statevector
@@ -226,6 +227,8 @@ class AdjointDifferentiator:
         # Calculate d(L)/d(|psi_t>)
         grad = self._initial_grad_vector(state, n_qubits, hamiltonian)
         grad_vector = self._norm_grad_vector(n_qubits, grad)
+        if self._grad_norm == 0:
+            return grads_dict
 
         for idx in range(len(pipeline["qubits"])):
             if remain_training_gates == 0:
@@ -260,23 +263,19 @@ class AdjointDifferentiator:
         Returns:
             Statevector: Normalized gradient vector as a quantum state.
         """
-        self._grad_norm = np.linalg.norm(grad)
-        if self._grad_norm < 1e-12:
+        if not np.all(np.isfinite(grad)):
+            raise ValueError("Hamiltonian action must have finite components.")
+        scaled, scale = scaled_vector(grad)
+        if scale == 0:
+            self._grad_norm = 0.0
             return Statevector(n_qubits)
-
-        grad_normalized = grad / self._grad_norm
-        try:
-            grad_vector = Statevector.from_state(n_qubits, grad_normalized)
-        except ValueError as e:
-            if "not normalized" in str(e):
-                current_norm = np.linalg.norm(grad_normalized)
-                if abs(current_norm - 1.0) > 1e-8:
-                    grad_normalized = grad_normalized / current_norm
-                grad_vector = Statevector.from_state(n_qubits, grad_normalized)
-            else:
-                raise ValueError
-
-        return grad_vector
+        # Normalize at unit scale: squaring the original components can
+        # underflow or overflow even when the vector and its norm are finite.
+        scaled_norm = np.linalg.norm(scaled)
+        self._grad_norm = scale * scaled_norm
+        if not np.isfinite(self._grad_norm):
+            raise ValueError("Hamiltonian action norm exceeds floating-point range.")
+        return Statevector.from_state(n_qubits, scaled / scaled_norm)
 
     def _check_hamiltonians(self, hams) -> List[Hamiltonian]:
         """
@@ -295,7 +294,6 @@ class AdjointDifferentiator:
             hams = [hams]
         if isinstance(hams, list):
             for i in range(len(hams)):
-                hams[i].simplify()
                 if not isinstance(hams[i], Hamiltonian):
                     raise TypeError(f"Expected Hamiltonian, got {type(hams[i]).__name__}")
         else:
@@ -375,7 +373,7 @@ class AdjointDifferentiator:
                 continue
             pipeline["qubits"].append([qubit.index for qubit in op.qubits])
             pipeline["grad_matrix"].append(
-                op.grad_matrix() if any(isinstance(p, Parameter) and p.symbols for p in origion_op.params) else None
+                grad_matrix(op) if any(isinstance(p, Parameter) and p.symbols for p in origion_op.params) else None
             )
             params = []
             is_training_gate = False
@@ -402,11 +400,12 @@ class AdjointDifferentiator:
         Returns:
             tuple: (coefficients, circuit_list)
         """
-        hamiltonian.simplify()
         coefficients = []
         circuit_list = []
         for pauli_str, coeff in hamiltonian.terms:
-            coefficients.append(coeff)
+            # Pauli gates below omit the string's global phase. Preserve it
+            # explicitly without simplify(), which also prunes small terms.
+            coefficients.append(coeff * pauli_str.phase.to_complex())
             circuit = Circuit(n_qubits)
             for idx in range(pauli_str.num_qubits):
                 if pauli_str.get_pauli(idx) == Pauli.x():

@@ -72,15 +72,17 @@ class BasisEncoder:
         Examples:
             >>> circuits = encoder(np.array([0, 1, 2, 3]))
         """
-        if not np.all((data >= 0) & (data == data.astype(int))):
-            raise ValueError("Basis encoding only supports encoding non-negative integers.")
-
-        if data.ndim != 1:
-            raise ValueError("Basis encoding only supports 1D array.")
-
-        n_qubits = max(1, int(np.ceil(np.log2(np.max(data) + 1))))
+        data = np.asarray(data)
+        if data.ndim != 1 or data.size == 0:
+            raise ValueError("Basis encoding requires a nonempty 1D array")
+        if data.dtype.kind not in "biuf" or not np.isfinite(data).all() or (data < 0).any():
+            raise ValueError("Basis encoding only supports encoding non-negative integers (finite values required)")
+        if not np.equal(data, np.floor(data)).all():
+            raise ValueError("Basis encoding only supports encoding non-negative integers")
+        values = [int(value) for value in data]
+        n_qubits = max(1, max(values).bit_length())
         enc_circs = []
-        for x in data:
+        for x in values:
             circuit = Circuit(n_qubits)
             bin_x = format(x, f"0{n_qubits}b")[::-1]
             for i, bit in enumerate(bin_x):

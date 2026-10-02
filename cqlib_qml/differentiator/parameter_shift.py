@@ -55,7 +55,8 @@ class ParameterShiftDifferentiator:
     rule, including when multiple gates share a symbol.
 
     This method is hardware-friendly as it requires only circuit
-    evaluations, making it suitable for running on quantum devices.
+    evaluations. The current implementation uses Statevector and does not
+    expose hardware executors, shots or measurement statistics.
 
     Args:
         shift: The shift amount in radians. Default is π/2.
@@ -249,7 +250,6 @@ class ParameterShiftDifferentiator:
             hams = [hams]
         if isinstance(hams, list):
             for i in range(len(hams)):
-                hams[i].simplify()
                 if not isinstance(hams[i], Hamiltonian):
                     raise TypeError(f"Expected Hamiltonian, got {type(hams[i]).__name__}")
         else:

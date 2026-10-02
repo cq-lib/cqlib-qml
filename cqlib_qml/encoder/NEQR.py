@@ -103,6 +103,7 @@ class NEQR(FRQI):
 
         enc_cirs = []
         for img in imgs:
+            img = self._as_numpy(img)
             img = self._img_preprocess(img, flatten=True)
             encoder = self._construct_encoder(img, use_qic)
             enc_cirs.append(encoder)

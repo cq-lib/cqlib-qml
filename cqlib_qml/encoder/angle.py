@@ -38,8 +38,8 @@ class AngleEncoder:
         - classical: Each feature is encoded as RY(2*x) on a separate qubit
         - dense: Two features per qubit: RY(2*theta) and RZ(phi)
 
-    The factor of 2 in RY gates maps data from [0, 1] to [0, 2π],
-    allowing full rotation range.
+    The factor of 2 maps data from [0, 1] to angles in [0, 2] radians.
+    A full 2π rotation requires input values in [0, π].
 
     Args:
         mode (str): Encoding mode. Options: "classical" or "dense".

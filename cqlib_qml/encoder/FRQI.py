@@ -24,11 +24,11 @@ Examples:
     >>> encoder = FRQI(n_pixels=16, grayscale=2)
     >>>
     >>> # Encode a single image
-    >>> img = np.random.rand(4, 4)
+    >>> img = np.random.randint(0, 2, (4, 4))
     >>> circuit = encoder(img)
     >>>
     >>> # Encode batch of images
-    >>> imgs = np.random.rand(8, 4, 4)
+    >>> imgs = np.random.randint(0, 2, (8, 4, 4))
     >>> circuits = encoder(imgs)
 """
 
@@ -56,6 +56,11 @@ class FRQI(ImageEncoder):
             Must be a perfect square and a power of 4 (4, 16, 64, ...).
         grayscale (int, optional): Number of grayscale levels.
             Defaults to 2.
+
+    Note:
+        Tensor inputs are detached and copied to CPU before encoding.
+        FRQI normalizes brightness by each image's maximum: globally scaled
+        positive images encode identically. This is not absolute brightness encoding.
 
     Attributes:
         _n_pixels (int): Number of pixels.
@@ -104,7 +109,7 @@ class FRQI(ImageEncoder):
         Encode images using FRQI.
 
         Args:
-            imgs (Union[list, np.ndarray]): Input image(s). Can be a single
+            imgs (Union[list, np.ndarray, torch.Tensor]): Input image(s). Can be a single
                 image (2D array) or a batch (3D or 4D array).
             use_qic (bool, optional): Whether to use Quantum Image
                 Compression for optimization. Defaults to False.
@@ -117,7 +122,7 @@ class FRQI(ImageEncoder):
             ValueError: If image dimensions or values are invalid.
 
         Examples:
-            >>> img = np.random.rand(4, 4)  # 4x4 image
+            >>> img = np.random.randint(0, 2, (4, 4))  # 4x4 image
             >>> circuit = encoder(img)
             >>>
             >>> # With QIC optimization
@@ -128,6 +133,7 @@ class FRQI(ImageEncoder):
 
         enc_cirs = []
         for img in imgs:
+            img = self._as_numpy(img)
             img = self._img_preprocess(img, flatten=True)
             encoder = self._construct_encoder(img, use_qic)
             enc_cirs.append(encoder)
@@ -218,7 +224,7 @@ class FRQI(ImageEncoder):
         """
         circuit = Circuit(self._n_qubits)
         for i in range(self._n_pixels):
-            if img[i] < 1e-12:
+            if img[i] == 0:
                 continue
             # Set position qubits
             bin_pos = bin(i)[2:].zfill(self._n_pos_qubits)
@@ -363,7 +369,7 @@ class FRQI(ImageEncoder):
         """Group pixels by color value."""
         img_dict = dict()
         for i in range(self._n_pixels):
-            if img[i] < 1e-12:
+            if img[i] == 0:
                 continue
             key = bin(int(img[i]))[2:].zfill(self._n_color_qubits) if bin_key else str(img[i])
             val = bin(i)[2:].zfill(self._n_pos_qubits) if bin_val else i
@@ -385,6 +391,10 @@ class FRQI(ImageEncoder):
 
     def _get_min_expression(self, pixels):
         """Get minimum Boolean expression for pixels."""
+        if self._n_pos_qubits == 0:
+            # A single pixel needs an unconditional color gate, not an empty
+            # Boolean conjunction with no position variables.
+            return True
         boolen_expressions = ""
         for i in range(len(pixels)):
             boolen_expressions += self._get_boolen_expression(pixels[i])

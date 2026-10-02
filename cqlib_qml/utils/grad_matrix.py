@@ -9,10 +9,6 @@ import numpy as np
 from cqlib.circuit import ValueOperation
 
 
-def _standard_gate_grad(self, gate):
-    return grad_matrix(self)
-
-
 def grad_matrix(self):
     if self.num_params == 0:
         return None
@@ -31,7 +27,3 @@ def grad_matrix(self):
             derivative += coefficient * (plus - minus)
         gradients.append(derivative)
     return gradients
-
-
-ValueOperation._standard_gate_grad = _standard_gate_grad
-ValueOperation.grad_matrix = grad_matrix

@@ -28,6 +28,7 @@ Examples:
 
 import numpy as np
 from cqlib.circuit import Circuit, MCGate, StandardGate
+from cqlib_qml._numerics import scaled_vector, stable_norm
 
 
 class AmplitudeEncoder:
@@ -107,10 +108,9 @@ class AmplitudeEncoder:
             # underflow in the norm. Real/imaginary components also avoid an
             # overflowing complex magnitude during scale selection.
             vec = np.asarray(vec, dtype=np.complex128)
-            scale = max(np.max(np.abs(vec.real)), np.max(np.abs(vec.imag)))
+            vec, scale = scaled_vector(vec)
             if scale == 0:
                 raise ValueError("Cannot encode zero vector.")
-            vec = vec / scale
             vec = vec / np.linalg.norm(vec)
             n_qubits = int(np.ceil(np.log2(len(vec))))
             padded_vec = np.zeros(1 << n_qubits, dtype=np.complex128)
@@ -142,11 +142,11 @@ class AmplitudeEncoder:
     def _build_recursive(self, data: np.ndarray, qubits: list, circuit: Circuit,
                          controls=(), bits=()) -> None:
         """Prepare magnitudes using global qubit indices and prefix controls."""
-        if not qubits or np.linalg.norm(data) == 0:
+        if not qubits or not np.any(data):
             return
         current, remaining = qubits[0], qubits[1:]
         half = len(data) // 2
-        left_norm, right_norm = np.linalg.norm(data[:half]), np.linalg.norm(data[half:])
+        left_norm, right_norm = stable_norm(data[:half]), stable_norm(data[half:])
         theta = 2 * np.arctan2(right_norm, left_norm)
         zero_controls = [q for q, bit in zip(controls, bits) if bit == 0]
         for q in zero_controls:
