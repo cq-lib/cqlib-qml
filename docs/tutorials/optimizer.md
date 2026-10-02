@@ -554,3 +554,6 @@ $$\theta_{t+1} = \theta_t - \eta \frac{\hat{m}_t}{\sqrt{\hat{v}_t} + \epsilon}$$
 | `eps` | 1e-7 | 平滑项 |
 | `clip_norm` | None | 梯度裁剪阈值 |
 | `lr_scheduler` | None | 学习率调度器 |
+## 字符串配置校验
+
+配置名称不区分大小写，参数值保持原样。支持例如 `sgd(lr=.2, clip_norm=1.0, lr_scheduler=exponential(initial_lr=.2, stage_length=5, staircase=True))`，以及以字符串传入的调度器。仅接受注册名称、关键字参数和合法字面量，未知参数和任意 Python 表达式报错。历史状态字典的恢复接口保持兼容。

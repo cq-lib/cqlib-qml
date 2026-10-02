@@ -193,6 +193,8 @@ class Ansatz:
         self._assigned_cir = None
         self._bindings = None
 
+        self._forward_valid = False
+        self._gradient_valid = False
         self._trainable = True
         self._updatable = True
 
@@ -244,6 +246,10 @@ class Ansatz:
         if isinstance(enc_cirs, np.ndarray):
             enc_cirs = enc_cirs.tolist()
         if isinstance(enc_cirs, list):
+            if not enc_cirs:
+                raise ValueError("Encoding circuit list must not be empty")
+            if not isinstance(enc_cirs[0], Circuit):
+                raise TypeError("Expected Circuit as the first encoder element")
             width = enc_cirs[0].width
             for enc_cir in enc_cirs:
                 if not isinstance(enc_cir, Circuit):
@@ -375,7 +381,7 @@ class Ansatz:
             else:
                 exps, sv = self._get_expectations(cir, self._hams, state_vector)
             expectations.append(exps)
-            if self._trainable or not self._updatable:
+            if self._retain_derived and self.symbols and (self._trainable or not self._updatable):
                 binding = bindings_list[i] if len(bindings_list) == n else bindings_list[0]
                 initial = state_vector
                 if isinstance(self._differentiator, ParameterShiftDifferentiator) and self._encoder is not None:
@@ -392,7 +398,8 @@ class Ansatz:
         return np.array(expectations)
 
     def forward(
-        self, X: Optional[np.ndarray] = None, quantum_state: Optional[np.ndarray] = None
+        self, X: Optional[np.ndarray] = None, quantum_state: Optional[np.ndarray] = None,
+        *, retain_derived: bool = True
     ) -> Union[float, np.ndarray]:
         """
         Perform forward propagation for one step.
@@ -405,6 +412,8 @@ class Ansatz:
                 If None, uses random initialization. Defaults to None.
             quantum_state (np.ndarray, optional): Initial quantum state vector.
                 Defaults to None (|0⟩ state).
+            retain_derived (bool): Retain the forward Jacobian for backward.
+                False clears prior training state without changing freeze status.
 
         Returns:
             Union[float, np.ndarray]: Expectation values of the measurements.
@@ -423,6 +432,11 @@ class Ansatz:
             >>> ansatz.assign_parameters({"theta": 0.5})
             >>> result = ansatz.forward()
         """
+        self._forward_valid = False
+        self._gradient_valid = False
+        self._retain_derived = retain_derived
+        if not retain_derived:
+            self._invalidate_gradients()
         if len(self) == 0:
             raise ValueError("The circuit must be initialized.")
         if self._differentiator is None:
@@ -433,6 +447,7 @@ class Ansatz:
             quantum_state = self._validate_vectors(quantum_state, self.num_qubits)
         circuits, bindings_list = self._get_fwd_circuits(X)
         expectations = self._fwd(circuits, quantum_state, bindings_list)
+        self._forward_valid = retain_derived
         return expectations
 
     def _bwd(self, sv: np.ndarray, bindings: Optional[Dict] = None,
@@ -488,10 +503,14 @@ class Ansatz:
             >>> # Backward pass
             >>> ansatz.backward(loss_fun.grads())
         """
+        if not self._forward_valid:
+            raise ValueError("No gradients available; run forward in training mode before backward")
         if not self._trainable and self._updatable:
             raise ValueError("Ansatz is frozen.")
         if dLdexp is None:
             return self._gradients
+        if not self.symbols:
+            return {} if self._updatable else np.empty((np.shape(dLdexp)[0], 0))
         else:
             if isinstance(dLdexp, numbers.Number):
                 dLdexp = np.array([dLdexp])
@@ -512,6 +531,7 @@ class Ansatz:
                     f"Gradient batch size {dLdexp.shape[0]} does not match encoding batch {expected_batch_size}."
                 )
 
+            self._gradient_valid = True
             for key, val in self._jacobian.items():
                 if val.ndim == 1:
                     val = val.reshape(1, -1)
@@ -632,6 +652,12 @@ class Ansatz:
         """Reset the gradients of parameters to zero."""
         if not self._trainable:
             raise ValueError("Ansatz is frozen.")
+        self._invalidate_gradients()
+
+    def _invalidate_gradients(self):
+        """Discard training state without changing persistent freeze status."""
+        self._forward_valid = False
+        self._gradient_valid = False
         self._gradients = {}
         self._jacobian = {}
 
@@ -653,6 +679,8 @@ class Ansatz:
         """
         if not (self._trainable and self._updatable):
             raise ValueError("Ansatz is frozen.")
+        if not self._gradient_valid:
+            return
         self._optimizer.step()
         new_params = dict(self._bindings)
         for k, v in self._gradients.items():
@@ -738,6 +766,7 @@ class Ansatz:
         optim = summary_dict["optimizer"]
         if optim is not None:
             self.set_optimizer(optim)
+        self._invalidate_gradients()
 
     def _circuit_summary(self) -> dict:
         """Serialize canonical decomposed operations using only Python/NumPy values."""

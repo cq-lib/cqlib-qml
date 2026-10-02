@@ -24,9 +24,7 @@ Examples:
     >>> lr = scheduler(step=1000)
 """
 
-import re
 from abc import ABC, abstractmethod
-from ast import literal_eval as eval
 from copy import deepcopy
 from math import erf
 
@@ -210,23 +208,8 @@ class SchedulerInitializer:
         Raises:
             ValueError: If scheduler name is not supported.
         """
-        r = r"([a-zA-Z]*)=([^,)]*)"
-        sch_str = self.param.lower()
-        kwargs = dict([(i, eval(j)) for (i, j) in re.findall(r, sch_str)])
-
-        if "constant" in sch_str:
-            scheduler = ConstantScheduler(**kwargs)
-        elif "exponential" in sch_str:
-            scheduler = ExponentialScheduler(**kwargs)
-        elif "noam" in sch_str:
-            scheduler = NoamScheduler(**kwargs)
-        elif "king" in sch_str:
-            scheduler = KingScheduler(**kwargs)
-        else:
-            raise ValueError(
-                f"Unsupported scheduler: {sch_str}. " f"Supported: ['constant', 'exponential', 'noam', 'king']"
-            )
-        return scheduler
+        from ._configuration import parse_configuration
+        return parse_configuration(self.param, scheduler_registry())
 
     def init_from_dict(self):
         """
@@ -284,6 +267,8 @@ class ConstantScheduler(SchedulerBase):
 
     def __init__(self, lr=0.01, **kwargs):
         """Initialize a ConstantScheduler instance."""
+        if kwargs:
+            raise TypeError(f"Unexpected configuration parameters: {sorted(kwargs)}")
         super().__init__()
         self.lr = lr
         self.hyperparameters = {"id": "ConstantScheduler", "lr": self.lr}
@@ -330,6 +315,8 @@ class ExponentialScheduler(SchedulerBase):
 
     def __init__(self, initial_lr=0.01, stage_length=500, staircase=False, decay=0.1, **kwargs):
         """Initialize an ExponentialScheduler instance."""
+        if kwargs:
+            raise TypeError(f"Unexpected configuration parameters: {sorted(kwargs)}")
         super().__init__()
         self.decay = decay
         self.staircase = staircase
@@ -393,6 +380,8 @@ class NoamScheduler(SchedulerBase):
 
     def __init__(self, model_dim=512, scale_factor=1, warmup_steps=4000, **kwargs):
         """Initialize a NoamScheduler instance."""
+        if kwargs:
+            raise TypeError(f"Unexpected configuration parameters: {sorted(kwargs)}")
         super().__init__()
         self.model_dim = model_dim
         self.scale_factor = scale_factor
@@ -457,6 +446,8 @@ class KingScheduler(SchedulerBase):
 
     def __init__(self, initial_lr=0.01, patience=1000, decay=0.99, **kwargs):
         """Initialize a KingScheduler instance."""
+        if kwargs:
+            raise TypeError(f"Unexpected configuration parameters: {sorted(kwargs)}")
         super().__init__()
         if not isinstance(patience, (int, np.integer)) or patience < 1:
             raise ValueError("patience must be a positive integer")
@@ -612,3 +603,12 @@ class KingScheduler(SchedulerBase):
             self.current_lr *= self.decay
 
         return self.current_lr
+
+
+def scheduler_registry():
+    """Registered aliases used by string configurations and checkpoint strings."""
+    registry = {}
+    for cls in (ConstantScheduler, ExponentialScheduler, NoamScheduler, KingScheduler):
+        registry[cls.__name__.casefold()] = cls
+        registry[cls.__name__.removesuffix("Scheduler").casefold()] = cls
+    return registry

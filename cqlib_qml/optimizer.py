@@ -34,9 +34,7 @@ Examples:
     >>> new_param = opt.update(param, grad, "weight")
 """
 
-import re
 from abc import ABC, abstractmethod
-from ast import literal_eval as eval
 from copy import deepcopy
 
 import numpy as np
@@ -291,20 +289,11 @@ class OptimizerInitializer:
         Raises:
             ValueError: If optimizer name is not supported.
         """
-        r = r"([a-zA-Z]*)=([^,)]*)"
-        opt_str = self.param.lower()
-        kwargs = dict([(i, eval(j)) for (i, j) in re.findall(r, opt_str)])
-        if "sgd" in opt_str:
-            optimizer = SGD(**kwargs)
-        elif "adagrad" in opt_str:
-            optimizer = AdaGrad(**kwargs)
-        elif "rmsprop" in opt_str:
-            optimizer = RMSProp(**kwargs)
-        elif "adam" in opt_str:
-            optimizer = Adam(**kwargs)
-        else:
-            raise ValueError(f"Unsupported optimizer: {opt_str}. " f"Supported: ['sgd', 'adagrad', 'rmsprop', 'adam']")
-        return optimizer
+        from ._configuration import parse_configuration
+        from .scheduler import scheduler_registry
+        registry = {name.casefold(): cls for name, cls in
+                    (("SGD", SGD), ("AdaGrad", AdaGrad), ("RMSProp", RMSProp), ("Adam", Adam))}
+        return parse_configuration(self.param, registry, nested=scheduler_registry())
 
     def init_from_dict(self):
         """
@@ -373,6 +362,8 @@ class SGD(OptimizerBase):
 
     def __init__(self, lr=0.01, momentum=0.0, clip_norm=None, lr_scheduler=None, **kwargs):
         """Initialize an SGD instance."""
+        if kwargs:
+            raise TypeError(f"Unexpected configuration parameters: {sorted(kwargs)}")
         super().__init__(lr, lr_scheduler)
 
         self.hyperparameters = {
@@ -446,6 +437,8 @@ class AdaGrad(OptimizerBase):
 
     def __init__(self, lr=0.01, eps=1e-7, clip_norm=None, lr_scheduler=None, **kwargs):
         """Initialize an AdaGrad instance."""
+        if kwargs:
+            raise TypeError(f"Unexpected configuration parameters: {sorted(kwargs)}")
         super().__init__(lr, lr_scheduler)
 
         self.cache = {}
@@ -522,6 +515,8 @@ class RMSProp(OptimizerBase):
 
     def __init__(self, lr=0.001, decay=0.9, eps=1e-7, clip_norm=None, lr_scheduler=None, **kwargs):
         """Initialize an RMSProp instance."""
+        if kwargs:
+            raise TypeError(f"Unexpected configuration parameters: {sorted(kwargs)}")
         super().__init__(lr, lr_scheduler)
 
         self.cache = {}
@@ -620,6 +615,8 @@ class Adam(OptimizerBase):
         **kwargs,
     ):
         """Initialize an Adam instance."""
+        if kwargs:
+            raise TypeError(f"Unexpected configuration parameters: {sorted(kwargs)}")
         super().__init__(lr, lr_scheduler)
 
         self.cache = {}

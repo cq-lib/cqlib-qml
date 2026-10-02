@@ -93,7 +93,7 @@ class Module:
         """
         self._nets = self._validate_nets(list(args))
 
-    def forward(self, x=None):
+    def forward(self, x=None, *, retain_derived=True):
         """
         Perform forward propagation through the module.
 
@@ -102,6 +102,8 @@ class Module:
 
         Args:
             x (np.ndarray, optional): Input data. Defaults to None.
+            retain_derived (bool): Keep training state. False clears old gradients
+                and caches; it does not change component freeze status.
 
         Returns:
             np.ndarray: Output of the last component in the module.
@@ -113,10 +115,29 @@ class Module:
             >>> # For ansatz-only models (no input needed)
             >>> output = model.forward()
         """
+        if not retain_derived:
+            self._invalidate_gradients()
+        else:
+            self._forward_valid = False
         x_in = x
         for net in self._nets:
-            x_in = net.forward(x_in)
+            if retain_derived:
+                x_in = net.forward(x_in)
+            else:
+                from inspect import signature
+                if "retain_derived" in signature(net.forward).parameters:
+                    x_in = net.forward(x_in, retain_derived=False)
+                else:
+                    x_in = net.forward(x_in)
+                net._invalidate_gradients()
+        self._forward_valid = retain_derived
         return x_in
+
+    def _invalidate_gradients(self):
+        """Discard every component's training state, including frozen ones."""
+        self._forward_valid = False
+        for net in self._nets:
+            net._invalidate_gradients()
 
     def backward(self, dLdout=None):
         """
@@ -142,12 +163,16 @@ class Module:
             >>> dLdout = loss_fn.grads()
             >>> grad = model.backward(dLdout)
         """
+        if not getattr(self, "_forward_valid", False):
+            raise ValueError("Run a training forward before backward")
         for net in self._nets[::-1]:
             if isinstance(net, Ansatz) and not net.trainable and net.updatable:
                 continue  # Frozen quantum source has no classical input gradient.
             if not isinstance(net, Ansatz) and dLdout is None:
                 raise ValueError("Classical layers must pass in gradients.")
             dLdout = net.backward(dLdout)
+            if isinstance(net, Layer):
+                net._inference_invalidated = False
         return dLdout
 
     def random_init(self) -> None:
@@ -213,6 +238,8 @@ class Module:
             >>> model.update()
             >>> model.update(cur_loss=0.5)
         """
+        if not getattr(self, "_forward_valid", False):
+            return
         for net in self._nets:
             if net.trainable and net.updatable:
                 net.update(cur_loss)
@@ -317,6 +344,7 @@ class Module:
                 candidate.load_params(deepcopy(val))
             for val, net in zip(values, self._nets):
                 net.load_params(val)
+            self._forward_valid = False
         except Exception as e:
             raise ValueError(f"Mismatched model. Error: {e}")
 

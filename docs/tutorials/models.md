@@ -415,3 +415,10 @@ HQNN 结合了量子计算的高维特征表示能力和经典计算的线性变
 | `out_dim` | int | 输出维度 |
 | `params` | np.ndarray | 初始参数 |
 | `optimizer` | str/dict/OptimizerBase | 优化器 |
+## 训练状态与恢复范围
+
+`freeze()` 持续生效，只有显式 `unfreeze()` 才解除冻结。QNN/HQNN 的 `forward(..., trainable=False)` 仅执行本次推理，不改变冻结状态，并清除量子和经典组件的旧梯度与反向缓存。推理后 `update()` 不更新参数或推进优化器；再次反向必须先执行训练前向。Module/Ansatz 可使用仅关键字参数 `retain_derived=False` 表达相同行为。冻结的中间层在训练前向中仍能传播输入梯度。
+
+初始化 `params` 必须是一维有限实数向量，长度与 `ansatz.symbols` 完全一致。
+
+Checkpoint 恢复模型参数、线路结构、测量配置及已保存的优化器/调度器状态，返回 `(epoch, iteration + 1)`。它没有完整保存随机数状态、数据迭代顺序、微分器配置和冻结状态，因此不保证任意训练过程精确续跑。

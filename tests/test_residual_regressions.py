@@ -75,6 +75,7 @@ def test_multiclass_mse_epoch_log_is_element_mean(monkeypatch, capsys, batch_siz
     qnn.forward.side_effect = lambda circuits, trainable: predictions[np.asarray(circuits, dtype=int)]
     model = VQC(HEAnsatz(3, d=1, layers=['RY', 'CX']), AngleEncoder(), readouts=[0, 1, 2], loss='MSE',
                 n_classes=3, epochs=1, batch_size=batch_size, verbose=True)
+    qnn._nets = [model.ansatz]
     monkeypatch.setattr(model, '_create_qnn', lambda: qnn)
     monkeypatch.setattr(model, '_encode', lambda data: data[:, 0].astype(int).tolist())
     model.fit(X, y)

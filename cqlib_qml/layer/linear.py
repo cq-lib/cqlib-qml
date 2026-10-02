@@ -206,6 +206,8 @@ class Linear(Layer):
             >>> X = np.random.randn(10)
             >>> output = layer.forward(X)  # Shape: (5,)
         """
+        self._forward_valid = False
+        self._gradient_valid = False
         if X is None:
             raise ValueError("Input should not be None.")
         if X.ndim == 1:
@@ -220,14 +222,15 @@ class Linear(Layer):
         y = self._act_fn(z) if self._act_fn else z
 
         if retain_derived:
+            self._tracks_gradient_validity = True
+            self._inference_invalidated = False
             self._X = X.copy()
             self._derived_variables["z"] = z.copy()
             self._derived_variables["W"] = W.copy()
 
         else:
-            self._X = []
-            self._derived_variables["z"] = None
-            self._derived_variables["W"] = None
+            self._invalidate_gradients()
+        self._forward_valid = retain_derived
         return y
 
     def _bwd(self, dLdy: np.ndarray, x: np.ndarray, z: np.ndarray) -> tuple:
@@ -288,6 +291,8 @@ class Linear(Layer):
             >>> dLdy = np.random.randn(5)
             >>> dX = layer.backward(dLdy)  # Shape: (10,)
         """
+        if not self._forward_valid:
+            raise ValueError("Run a training forward before backward (including after zero_grad)")
         retain_grad = retain_grad and self._trainable
         if isinstance(dLdy, numbers.Number):
             dLdy = np.array([dLdy])
@@ -302,6 +307,7 @@ class Linear(Layer):
         if self._X.shape[0] != dLdy.shape[0]:
             raise ValueError(f"Batch size mismatch: input batch {self._X.shape[0]} vs gradient batch {dLdy.shape[0]}.")
 
+        self._gradient_valid = retain_grad
         dX = []
         X = self._X
         for index, (dy, x) in enumerate(zip(dLdy, X)):

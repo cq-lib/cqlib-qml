@@ -64,3 +64,39 @@ def test_recursive_amplitude_preserves_representable_gate_angles(small):
     circuit = AmplitudeEncoder()(np.array([1., small]))[0]
     angle = list(circuit)[0].params[0]
     np.testing.assert_allclose(angle / small, 2., rtol=1e-12, atol=0.)
+
+
+@pytest.mark.parametrize('cls', [QNN, HQNN])
+@pytest.mark.parametrize('bad_input', [[], [Circuit(3)]])
+def test_failed_inference_invalidates_training_state_and_can_recover(cls, bad_input):
+    model = cls(HEAnsatz(2, 1, layers=['RY']), readouts=[0],
+                **({'out_dim': 2} if cls is HQNN else {}))
+    circuits = AngleEncoder()(np.array([[.1, .2], [.3, .4]]))
+    output = model.forward(circuits)
+    model.backward(np.ones_like(output))
+    bindings = dict(model._ansatz._bindings)
+    weights = model._linear.parameters['W'].copy() if cls is HQNN else None
+    steps = [net._optimizer.cur_step for net in model._nets]
+    with pytest.raises(ValueError):
+        model.forward(bad_input, trainable=False)
+    with pytest.raises(ValueError, match='forward|training'):
+        model.backward(np.ones_like(output))
+    model.update()
+    assert model._ansatz._bindings == bindings
+    assert [net._optimizer.cur_step for net in model._nets] == steps
+    if weights is not None:
+        np.testing.assert_array_equal(model._linear.parameters['W'], weights)
+    output = model.forward(circuits)
+    model.backward(np.ones_like(output))
+    model.update()
+    assert model._ansatz._bindings != bindings
+
+
+@pytest.mark.parametrize('cls', [QNN, HQNN])
+def test_failed_inference_preserves_freeze_status(cls):
+    model = cls(HEAnsatz(2, 1, layers=['RY']), readouts=[0],
+                **({'out_dim': 2} if cls is HQNN else {}))
+    model.freeze()
+    with pytest.raises(ValueError):
+        model.forward([], trainable=False)
+    assert all(not net.trainable for net in model._nets)

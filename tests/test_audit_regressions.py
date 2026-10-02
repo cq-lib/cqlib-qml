@@ -172,9 +172,14 @@ def test_vqc_label_mapping_and_classifier_contract(labels, loss):
     X = np.array([[.1, .2], [.4, .5], [.7, .8], [.2, .1]])
     y = np.array(labels * 2)
     model.fit(X, y)
-    # Compare to the same trained circuit with conventional integer labels.
-    reference = VQC(model.ansatz, model.encoder, loss=loss, readouts=model.readouts, epochs=0, verbose=False)
+    # Run a valid fit with zero learning rate to keep the trained circuit fixed
+    # while checking conventional labels. Zero epochs is no longer supported.
+    from copy import deepcopy
+    reference = VQC(deepcopy(model.ansatz), model.encoder, loss=loss,
+                    readouts=model.readouts, optimizer='sgd(lr=0)', epochs=1, verbose=False)
+    bindings = dict(reference.ansatz._bindings)
     reference.fit(X, np.array([0, 1, 0, 1]))
+    assert reference.ansatz._bindings == bindings
     expected = model.classes_[reference.predict(X)]
     np.testing.assert_array_equal(model.predict(X), expected)
     np.testing.assert_allclose(model.predict_proba(X).sum(axis=1), 1)

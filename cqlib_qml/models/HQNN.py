@@ -42,6 +42,7 @@ from cqlib_qml.ansatz import *
 from cqlib_qml.encoder import *
 from cqlib_qml.layer import *
 from cqlib_qml.models import Module
+from .QNN import validate_initial_params
 from cqlib_qml.loss import *
 from cqlib_qml.optimizer import *
 
@@ -122,6 +123,7 @@ class HQNN(Module):
         self._ansatz = ansatz
         n_qubits = self._ansatz.num_qubits
         if params is not None:
+            params = validate_initial_params(ansatz, params)
             bindings = dict(zip(ansatz.symbols, params))
             self._ansatz.assign_parameters(bindings)
         if readouts is None:
@@ -143,8 +145,10 @@ class HQNN(Module):
             data_circuits (Union[Circuit, List[Circuit]]): Data circuits
                 after encoding. Can be a single Circuit or a list.
             trainable (bool, optional): Whether to enable training mode.
-                If True, gradients will be computed. If False, the model
-                is in inference mode. Defaults to True.
+                If True, retains training state while respecting freeze().
+                If False, clears old gradients and backward caches before
+                validating inputs, even if the call fails. Freeze status is
+                unchanged. Defaults to True.
 
         Returns:
             np.ndarray: Output from the classical linear layer.
@@ -160,10 +164,8 @@ class HQNN(Module):
             >>> # Get predictions (for classification)
             >>> predictions = np.argmax(output, axis=1)
         """
+        if not trainable:
+            self._invalidate_gradients()
         self._ansatz.add_encoder(data_circuits)
-        if trainable:
-            self._ansatz.unfreeze()
-        else:
-            self._ansatz.freeze()
-        expections = super().forward()
+        expections = super().forward(retain_derived=trainable)
         return expections

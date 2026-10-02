@@ -844,3 +844,8 @@ model.load_checkpoint("./checkpoints/model.npy")
 | `validate()` | HQNN_classification | HQNN 验证 |
 | `train()` | QNN_classification | QNN 训练一个 epoch |
 | `validate()` | QNN_classification | QNN 验证 |
+## 分类器配置与验证指标
+
+`QSVM.fit(X, y, sample_weight=None)` 将样本权重传给 SVC，不接受其他训练关键字。VQC 的预测特征数必须等于训练时特征数。两个分类器拒绝未知 `set_params` 名称；配置改变后需要重新 fit。
+
+VQC 的 `epochs` 必须为正整数；`batch_size` 必须为正整数或 `None`（整批训练）。不接受布尔值、浮点数、零和负数。`fit()` 在创建 QNN、修改类别和参数前验证；`set_params()` 的非法训练配置也会直接报错，不修改已有配置或拟合状态。

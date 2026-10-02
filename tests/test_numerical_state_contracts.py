@@ -82,6 +82,16 @@ def training_data():
     return np.array([[.1, .2], [.3, .4], [.9, 1.], [1.2, 1.3]]), np.array([0, 0, 1, 1])
 
 
+def test_qsvm_owns_training_snapshot():
+    X, y = training_data()
+    query = X.copy()
+    model = QSVM(AngleEncoder()).fit(X, y)
+    predictions = model.predict(query)
+    decisions = model.decision_function(query)
+    assert not np.shares_memory(model._X_fit, X)
+    X[:] = 0
+    np.testing.assert_array_equal(model.predict(query), predictions)
+    np.testing.assert_allclose(model.decision_function(query), decisions)
 
 
 def vqc():
@@ -89,16 +99,72 @@ def vqc():
                loss='CrossEntropy', epochs=1, verbose=False)
 
 
+def test_vqc_invalid_loss_does_not_destroy_fitted_state():
+    X, y = training_data()
+    model = vqc().fit(X, y)
+    predictions = model.predict(X)
+    qnn = model._qnn
+    with pytest.raises(ValueError, match='Unsupported loss'):
+        model.set_params(loss='typo', epochs=2)
+    assert model.loss == 'CrossEntropy' and model.epochs == 1
+    assert model._qnn is qnn
+    np.testing.assert_array_equal(model.predict(X), predictions)
 
 
+def test_vqc_direct_invalid_loss_is_rejected_before_fit():
+    X, y = training_data()
+    model = vqc().fit(X, y)
+    qnn = model._qnn
+    model.loss = 'typo'
+    with pytest.raises(ValueError, match='Unsupported loss'):
+        model.fit(X, y)
+    assert model._qnn is qnn
 
 
+def test_qkm_failed_first_encoding_does_not_lock_dimensions():
+    model = QKM(AmplitudeEncoder())
+    with pytest.raises(ValueError):
+        model.kernel(np.zeros((1, 2)))
+    assert model._feature_dim is None
+    assert model._circuit_cache == {}
+    result = model.kernel([[1., 2., 3.]])
+    np.testing.assert_allclose(result, [[1 + 1e-8]], atol=1e-12)
 
 
+@pytest.mark.parametrize('data', [np.array(1), np.empty((0, 2)), np.empty((2, 0)),
+                                  np.ones((1, 2, 2)), [[np.nan, 1]], [[np.inf, 1]]])
+@pytest.mark.parametrize('side', ['X', 'Y'])
+def test_qkm_invalid_inputs_preserve_state(data, side):
+    model = QKM(AngleEncoder())
+    kwargs = {'X': data} if side == 'X' else {'X': [[.1, .2]], 'Y': data}
+    with pytest.raises(ValueError):
+        model.kernel(**kwargs)
+    assert model._feature_dim is None and model._n_qubits is None
+    assert model._circuit_cache == {}
 
 
+@pytest.mark.parametrize('fitted', [False, True])
+@pytest.mark.parametrize('failure', ['encoding', 'fidelity'])
+def test_qkm_partial_failure_is_atomic(monkeypatch, fitted, failure):
+    model = QKM(AmplitudeEncoder())
+    if fitted:
+        model.kernel([[1., 0.]])
+    snapshot = (model._feature_dim, model._n_qubits, dict(model._circuit_cache))
+    if failure == 'fidelity':
+        def fail(*args):
+            raise ValueError('simulator failed')
+        monkeypatch.setattr(model, '_fidelity', fail)
+        args = ([[.3, .4]], [[.6, .8]])
+    else:
+        args = ([[.3, .4]], [[0., 0.]])
+    with pytest.raises(ValueError):
+        model.kernel(*args)
+    assert (model._feature_dim, model._n_qubits, model._circuit_cache) == snapshot
 
 
+def test_qkm_accepts_complex_amplitudes_and_single_samples():
+    result = QKM(AmplitudeEncoder()).kernel([1, 1j], [1, -1j])
+    np.testing.assert_allclose(result, [[0.]], atol=1e-12)
 
 
 

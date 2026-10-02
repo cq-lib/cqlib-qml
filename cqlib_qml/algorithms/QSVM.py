@@ -29,6 +29,8 @@ Examples:
     >>> accuracy = qsvm.score(X_test, y_test)
 """
 
+from cqlib_qml._configuration import same_parameter_value
+
 import numpy as np
 from typing import Union
 from sklearn.svm import SVC
@@ -139,14 +141,21 @@ class QSVM(ClassifierMixin, BaseEstimator):
 
     def set_params(self, **params):
         valid = set(SVC().get_params()) - {"kernel", "C", "probability"}
+        allowed = valid | {"encoder", "C", "swap_test", "probability"}
+        unknown = set(params) - allowed
+        if unknown:
+            raise ValueError(f"Invalid QSVM parameters: {sorted(unknown)}")
+        changed = False
         for key, value in params.items():
+            old = getattr(self, key) if key in {"encoder", "C", "swap_test", "probability"} else self.svm_kwargs.get(key)
+            changed = changed or not same_parameter_value(old, value)
             if key in {"encoder", "C", "swap_test", "probability"}:
                 setattr(self, key, value)
-            elif key in valid:
-                self.svm_kwargs[key] = value
             else:
-                raise ValueError(f"Invalid QSVM parameter: {key}")
-        self._qkm = None
+                self.svm_kwargs[key] = value
+        if changed:
+            self._qkm = self._svm = self._X_fit = None
+            self.__dict__.pop("classes_", None)
         return self
 
     def _get_qkm(self) -> QKM:
@@ -163,7 +172,7 @@ class QSVM(ClassifierMixin, BaseEstimator):
             )
         return self._qkm
 
-    def fit(self, X: np.ndarray, y: np.ndarray, **kwargs) -> "QSVM":
+    def fit(self, X: np.ndarray, y: np.ndarray, sample_weight=None) -> "QSVM":
         """
         Fit the QSVM model to the training data.
 
@@ -173,6 +182,11 @@ class QSVM(ClassifierMixin, BaseEstimator):
         Args:
             X (np.ndarray): Training data of shape (n_samples, n_features).
             y (np.ndarray): Target labels of shape (n_samples,).
+            sample_weight (np.ndarray, optional): Per-sample SVC training weights.
+
+        Note:
+            The validated training features are copied. Later changes to the
+            caller's array do not alter predictions from the fitted model.
 
         Returns:
             QSVM: The fitted QSVM instance.
@@ -186,6 +200,8 @@ class QSVM(ClassifierMixin, BaseEstimator):
             >>> qsvm.fit(X, y)
         """
         X, y = check_X_y(X, y)
+        # Training and prediction must use the same privately owned snapshot.
+        X = X.copy()
 
         # Compute quantum kernel matrix
         qkm = QKM(encoder=self.encoder, swap_test=self.swap_test)
@@ -196,7 +212,7 @@ class QSVM(ClassifierMixin, BaseEstimator):
         if self.probability:
             options["probability"] = True
         svm = SVC(kernel="precomputed", C=self.C, **options)
-        svm.fit(K_train, y)
+        svm.fit(K_train, y, sample_weight=sample_weight)
 
         self._qkm = qkm
         self._svm = svm

@@ -81,6 +81,10 @@ class Layer(ABC):
 
     def __init__(self):
         """Initialize a Layer instance."""
+        self._forward_valid = False
+        self._gradient_valid = False
+        self._tracks_gradient_validity = False
+        self._inference_invalidated = False
         self._X = []
         self._act_fn = None
         self._trainable = True
@@ -185,6 +189,9 @@ class Layer(ABC):
         """
         if not self._trainable:
             raise ValueError("Layer is frozen.")
+        self._forward_valid = False
+        self._gradient_valid = False
+        self._inference_invalidated = False
         self._X = []
         for k, v in self._derived_variables.items():
             self._derived_variables[k] = None
@@ -194,6 +201,17 @@ class Layer(ABC):
                 self._gradients[k] = np.zeros_like(self._parameters[k])
             else:
                 self._gradients[k] = np.zeros_like(self._gradients[k])
+
+    def _invalidate_gradients(self):
+        """Clear inference-invalid training state, including on frozen layers."""
+        self._inference_invalidated = True
+        self._forward_valid = False
+        self._gradient_valid = False
+        self._X = []
+        for key in self._derived_variables:
+            self._derived_variables[key] = None
+        for key in self._gradients:
+            self._gradients[key] = np.zeros_like(self._gradients[key])
 
     def update(self, cur_loss: Optional[float] = None) -> None:
         """
@@ -213,6 +231,8 @@ class Layer(ABC):
         """
         if not self._trainable:
             raise ValueError("Layer is frozen.")
+        if self._inference_invalidated or (self._tracks_gradient_validity and not self._gradient_valid):
+            return
         self._optimizer.step()
         for k, v in self._gradients.items():
             if k in self._parameters:
@@ -274,3 +294,4 @@ class Layer(ABC):
                     warnings.warn("Activation function mismatch. Check your configuration.")
                 self._act_fn = ActivationInitializer(val)()
         self._init = True
+        self._invalidate_gradients()

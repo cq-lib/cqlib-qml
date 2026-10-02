@@ -101,6 +101,7 @@ class QNN(Module):
         """
         self._ansatz = ansatz
         if params is not None:
+            params = validate_initial_params(ansatz, params)
             bindings = dict(zip(ansatz.symbols, params))
             self._ansatz.assign_parameters(bindings)
         readouts = readouts if readouts is not None else self._ansatz.readouts
@@ -121,8 +122,10 @@ class QNN(Module):
             data_circuits (Union[Circuit, List[Circuit]]): Data circuits
                 after encoding. Can be a single Circuit or a list.
             trainable (bool, optional): Whether to enable training mode.
-                If True, gradients will be computed. If False, the model
-                is in inference mode. Defaults to True.
+                If True, retains training state while respecting freeze().
+                If False, clears old gradients and backward caches before
+                validating inputs, even if the call fails. Freeze status is
+                unchanged. Defaults to True.
 
         Returns:
             Union[float, np.ndarray]: Expectation values from the quantum
@@ -135,10 +138,17 @@ class QNN(Module):
             >>> # Inference mode
             >>> output = qnn.forward(data_circuits, trainable=False)
         """
+        if not trainable:
+            self._invalidate_gradients()
         self._ansatz.add_encoder(data_circuits)
-        if trainable:
-            self._ansatz.unfreeze()
-        else:
-            self._ansatz.freeze()
-        expections = super().forward()
+        expections = super().forward(retain_derived=trainable)
         return expections
+
+
+def validate_initial_params(ansatz, params):
+    """Validate the complete real parameter vector before changing an ansatz."""
+    values = np.asarray(params)
+    if (values.ndim != 1 or len(values) != len(ansatz.symbols)
+            or values.dtype.kind not in "iuf" or not np.isfinite(values).all()):
+        raise ValueError("Initial params must be a finite real vector matching ansatz.symbols")
+    return values

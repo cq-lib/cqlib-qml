@@ -257,7 +257,8 @@ class TestQSVM:
         assert hasattr(qsvm, "classes_")
         assert hasattr(qsvm, "_svm")
         assert hasattr(qsvm, "_X_fit")
-        assert qsvm._X_fit is X
+        np.testing.assert_array_equal(qsvm._X_fit, X)
+        assert not np.shares_memory(qsvm._X_fit, X)
 
     def test_clear_cache(self):
         """Test clearing the circuit cache."""
