@@ -288,7 +288,7 @@ def test_checkpoint_rejects_component_count_and_validates_before_mutation(tmp_pa
 
 def test_tutorial_custom_layer_and_model_composition():
     root = Path(__file__).resolve().parents[1]
-    text = (root / 'docs/tutorials/layer.md').read_text()
+    text = (root / 'docs/tutorials/layer.md').read_text(encoding='utf-8')
     code = text.split('### 使用示例', 1)[1].split('\n---', 1)[0]
     from textwrap import dedent
     namespace = {}
@@ -298,7 +298,7 @@ def test_tutorial_custom_layer_and_model_composition():
     layer.forward(X)
     layer.backward(np.ones((2, 3)))
     np.testing.assert_array_equal(layer.gradients['W'], X.T @ np.ones((2, 3)))
-    text = (root / 'docs/tutorials/models.md').read_text()
+    text = (root / 'docs/tutorials/models.md').read_text(encoding='utf-8')
     code = text.split('### 使用示例', 1)[1].split('### 核心方法', 1)[0]
     namespace = {}
     exec(dedent(code), namespace)
@@ -370,7 +370,7 @@ def test_linear_retained_input_is_a_snapshot():
 
 def test_tutorial_ansatz_training_loop_runs(capsys):
     root = Path(__file__).resolve().parents[1]
-    text = (root / 'docs/tutorials/ansatz.md').read_text()
+    text = (root / 'docs/tutorials/ansatz.md').read_text(encoding='utf-8')
     codes = re.findall(r'```python\n(.*?)```', text, flags=re.S)
     namespace = {}
     declaration = next(code for code in codes if 'class RotationAnsatz' in code)
@@ -384,7 +384,7 @@ def test_tutorial_ansatz_training_loop_runs(capsys):
 def test_tutorial_neqr_example_encodes_integer_color_indices():
     from textwrap import dedent
     root = Path(__file__).resolve().parents[1]
-    text = (root / 'docs/tutorials/encoder.md').read_text().split('## NEQR:', 1)[1]
+    text = (root / 'docs/tutorials/encoder.md').read_text(encoding='utf-8').split('## NEQR:', 1)[1]
     code = text.split('### 使用示例', 1)[1].split('**输出：**', 1)[0]
     namespace = {}
     exec(dedent(code), namespace)
