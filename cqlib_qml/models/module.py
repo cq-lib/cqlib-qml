@@ -94,6 +94,8 @@ class Module:
         """
         from cqlib_qml._state import make_rng
         self._rng = make_rng(random_state)
+        self.training = True
+        self._forward_valid = False
         self._nets = self._validate_nets(list(args))
         if random_state is not None:
             from cqlib_qml._state import make_rng
@@ -109,8 +111,8 @@ class Module:
 
         Args:
             x (np.ndarray, optional): Input data. Defaults to None.
-            retain_derived (bool): Keep training state. False clears old gradients
-                and caches; it does not change component freeze status.
+            retain_derived (bool): Keep the last forward cache. False discards
+                backward caches, preserving cumulative gradients and freeze status.
 
         Returns:
             np.ndarray: Output of the last component in the module.
@@ -141,7 +143,7 @@ class Module:
         return x_in
 
     def _invalidate_gradients(self):
-        """Discard every component's training state, including frozen ones."""
+        """Discard all forward caches, preserving accumulated parameter gradients."""
         self._forward_valid = False
         for net in self._nets:
             net._invalidate_gradients()
@@ -173,8 +175,6 @@ class Module:
         if not getattr(self, "_forward_valid", False):
             raise ValueError("Run a training forward before backward")
         for net in self._nets[::-1]:
-            if isinstance(net, Ansatz) and not net.trainable and net.updatable:
-                continue  # Frozen quantum source has no classical input gradient.
             if not isinstance(net, Ansatz) and dLdout is None:
                 raise ValueError("Classical layers must pass in gradients.")
             dLdout = net.backward(dLdout)
@@ -195,10 +195,7 @@ class Module:
         """
         for net in self._nets:
             if isinstance(net, Ansatz):
-                keys = net.symbols
-                values = self._rng.normal(size=len(net.symbols))
-                bindings = dict(zip(keys, values))
-                net.assign_parameters(bindings)
+                net.assign_weights(self._rng.normal(size=net.num_weights))
             else:
                 net._rng = deepcopy(self._rng)
                 net.init_params()
@@ -226,14 +223,13 @@ class Module:
 
     def zero_grad(self) -> None:
         """
-        Reset gradients to zero for all trainable components.
+        Reset accumulated gradients for every component, preserving forward caches.
 
         Examples:
             >>> model.zero_grad()
         """
         for net in self._nets:
-            if net.trainable:
-                net.zero_grad()
+            net.zero_grad()
 
     def update(self, cur_loss: Optional[float] = None) -> None:
         """
@@ -247,11 +243,19 @@ class Module:
             >>> model.update()
             >>> model.update(cur_loss=0.5)
         """
-        if not getattr(self, "_forward_valid", False):
-            return
         for net in self._nets:
-            if net.trainable and net.updatable:
+            if net.trainable:
                 net.update(cur_loss)
+        self._forward_valid = False
+
+    def train(self, mode=True):
+        self.training = bool(mode)
+        for net in self._nets:
+            net.train(mode)
+        return self
+
+    def eval(self):
+        return self.train(False)
 
     def save_checkpoint(self, model_path: str, ep: int, it: int, latest: bool = False) -> None:
         """

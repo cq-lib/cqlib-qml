@@ -105,8 +105,8 @@ class QNN(Module):
         self._ansatz = ansatz
         if params is not None:
             params = validate_initial_params(ansatz, params)
-            bindings = dict(zip(ansatz.symbols, params))
-            self._ansatz.assign_parameters(bindings)
+            bindings = dict(zip(ansatz.weight_params, params))
+            self._ansatz.assign_weights(bindings)
         readouts = readouts if readouts is not None else self._ansatz.readouts
         if readouts is None:
             raise ValueError("Must provide readouts.")
@@ -124,11 +124,11 @@ class QNN(Module):
         Args:
             data_circuits (Union[Circuit, List[Circuit]]): Data circuits
                 after encoding. Can be a single Circuit or a list.
-            trainable (bool, optional): Whether to enable training mode.
+            trainable (bool, optional): Whether to record backward caches.
                 If True, retains training state while respecting freeze().
-                If False, clears old gradients and backward caches before
-                validating inputs, even if the call fails. Freeze status is
-                unchanged. Defaults to True.
+                If False, discards backward caches before
+                validating inputs, even if the call fails. Accumulated gradients
+                are preserved. Freeze status is unchanged. Defaults to True.
 
         Returns:
             Union[float, np.ndarray]: Expectation values from the quantum
@@ -151,7 +151,7 @@ class QNN(Module):
 def validate_initial_params(ansatz, params):
     """Validate the complete real parameter vector before changing an ansatz."""
     values = np.asarray(params)
-    if (values.ndim != 1 or len(values) != len(ansatz.symbols)
+    if (values.ndim != 1 or len(values) != ansatz.num_weights
             or values.dtype.kind not in "iuf" or not np.isfinite(values).all()):
-        raise ValueError("Initial params must be a finite real vector matching ansatz.symbols")
+        raise ValueError("Initial params must be a finite real vector matching ansatz.weight_params")
     return values

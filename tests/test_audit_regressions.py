@@ -78,8 +78,8 @@ def test_linear_backward_uses_forward_weights_and_activation():
     np.testing.assert_allclose(dx, derivative)
     np.testing.assert_allclose(layer.gradients['W'], 2 * derivative)
     layer.zero_grad()
-    with pytest.raises(ValueError, match='forward'):
-        layer.backward(np.ones((2, 1)))
+    np.testing.assert_allclose(layer.backward(np.ones((2, 1))), derivative)
+    np.testing.assert_allclose(layer.gradients['W'], 2 * derivative)
 
 
 @pytest.mark.parametrize('loss_cls', [CrossEntropy, SoftmaxCrossEntropy])

@@ -54,12 +54,13 @@ def test_model_gradients_include_encoder_initial_state_and_batch(method, input_b
                             quantum_state if with_state else None)
     totals = (values + encoder_angles + initial_angles)[:count]
     np.testing.assert_allclose(actual[:, 0], np.cos(totals), atol=1e-12)
-    np.testing.assert_allclose(np.asarray(ansatz.backward()['t']).reshape(-1), -np.sin(totals), atol=1e-10)
+    np.testing.assert_allclose(np.asarray(ansatz.jacobian['t']).reshape(-1), -np.sin(totals), atol=1e-10)
     result = ansatz.backward(np.ones((count, 1)))
     if input_batch:
         np.testing.assert_allclose(np.asarray(result).reshape(-1), -np.sin(totals), atol=1e-10)
     else:
-        assert result['t'] == pytest.approx(-np.sin(totals).sum())
+        assert result.shape == (count, 0)
+        assert ansatz.gradients['t'] == pytest.approx(-np.sin(totals).sum())
 
 
 def test_parameter_shift_public_initial_state():
@@ -153,16 +154,16 @@ def test_new_symbol_keeps_existing_value_after_mutation():
     assert set(ansatz._bindings) == {'t', 'new'}
 
 
-def test_forward_replaces_stale_gradients_and_restores_update_mode():
+def test_forward_replaces_jacobian_and_restores_update_mode():
     ansatz = ry_ansatz()
     ansatz.forward(np.array([[0.2], [0.6]]))
     assert not ansatz.updatable
     ansatz.forward()
     assert ansatz.updatable
-    np.testing.assert_allclose(ansatz.backward()['t'], [-np.sin(0.3)])
+    np.testing.assert_allclose(ansatz.jacobian['t'], [[-np.sin(0.3)]])
     ansatz.zero_grad()
-    with pytest.raises(ValueError, match='run forward'):
-        ansatz.backward(np.ones((1, 1)))
+    assert ansatz.backward(np.ones((1, 1))).shape == (1, 0)
+    assert ansatz.gradients['t'] == pytest.approx(-np.sin(.3))
 
 
 def test_measurement_modes_replace_each_other():
@@ -171,11 +172,11 @@ def test_measurement_modes_replace_each_other():
     ansatz.set_measurement(hams=ham)
     assert ansatz.readouts is None
     np.testing.assert_allclose(ansatz.forward(), [[np.sin(0.3)]])
-    np.testing.assert_allclose(ansatz.backward()['t'], [np.cos(0.3)])
+    np.testing.assert_allclose(ansatz.jacobian['t'], [[np.cos(0.3)]])
     ansatz.set_measurement(readouts=[0])
     assert ansatz.hams is None
     np.testing.assert_allclose(ansatz.forward(), [[np.cos(0.3)]])
-    np.testing.assert_allclose(ansatz.backward()['t'], [-np.sin(0.3)])
+    np.testing.assert_allclose(ansatz.jacobian['t'], [[-np.sin(0.3)]])
 
 
 def test_hamiltonian_checkpoint_round_trip_and_next_step(tmp_path):
@@ -188,6 +189,7 @@ def test_hamiltonian_checkpoint_round_trip_and_next_step(tmp_path):
     original.forward()
     original.backward(np.ones((1, 2)))
     original.update()
+    original.zero_grad()
     Module(original).save_checkpoint(str(tmp_path), 2, 7)
     restored = ry_ansatz()
     restored.set_measurement(hams=[ham, Hamiltonian(1)])
@@ -220,7 +222,7 @@ def test_nested_circuit_and_barrier_checkpoint_restore_matrix_and_gradients(tmp_
     np.testing.assert_allclose(restored._assigned_cir.to_matrix(), original._assigned_cir.to_matrix())
     for model in (original, restored):
         np.testing.assert_allclose(model.forward(), [[np.cos(0.9)]], atol=1e-12)
-        np.testing.assert_allclose(model.backward()['t'], [-3 * np.sin(0.9)], atol=1e-10)
+        np.testing.assert_allclose(model.jacobian['t'], [[-3 * np.sin(0.9)]], atol=1e-10)
 
 
 @pytest.mark.parametrize('difference', ['gate', 'qubit', 'expression', 'order', 'matrix'])

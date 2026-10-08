@@ -91,16 +91,19 @@ def test_repeated_backward_reuses_jacobian(differentiator, batch):
     a.assign_parameters({'t': .3})
     output = a.forward(batch)
     first = deepcopy(a.backward(np.ones_like(output)))
+    first_weights = deepcopy(a.gradients)
     second = deepcopy(a.backward(2 * np.ones_like(output)))
     if batch is None:
-        assert second['t'] == pytest.approx(2 * first['t'])
-        assert second['t'] == pytest.approx(-2 * np.sin(.3))
+        assert second.shape == (1, 0)
+        assert a.gradients['t'] == pytest.approx(3 * first_weights['t'])
+        assert a.gradients['t'] == pytest.approx(-3 * np.sin(.3))
     else:
         np.testing.assert_allclose(second, 2 * first)
         np.testing.assert_allclose(second[:, 0], -2 * np.sin(batch[:, 0]))
     a.zero_grad()
-    with pytest.raises(ValueError, match='No gradients'):
-        a.backward(np.ones_like(output))
+    np.testing.assert_allclose(a.backward(np.ones_like(output)), first)
+    if batch is None:
+        assert a.gradients == first_weights
 
 
 @pytest.mark.parametrize('replace_encoder', [False, True])

@@ -22,3 +22,27 @@ def rng_from_state(state):
     generator = np.random.Generator(bit_generator())
     generator.bit_generator.state = state
     return generator
+
+def clone_state(obj):
+    """Copy owned state, including observables on user-defined QML subclasses."""
+    from cqlib.qis import Hamiltonian
+    memo, seen = {}, set()
+
+    def visit(value):
+        if id(value) in seen:
+            return
+        seen.add(id(value))
+        if isinstance(value, Hamiltonian):
+            # Older cqlib releases expose copy() without Python copy protocols.
+            memo[id(value)] = value.copy()
+        elif isinstance(value, dict):
+            for item in value.values():
+                visit(item)
+        elif isinstance(value, (tuple, list)):
+            for item in value:
+                visit(item)
+        elif any(base.__module__.startswith('cqlib_qml')
+                 for base in type(value).__mro__):
+            visit(value.__dict__)
+    visit(obj)
+    return deepcopy(obj, memo)

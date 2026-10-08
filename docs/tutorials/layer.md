@@ -424,3 +424,7 @@ $$W \sim \mathcal{U}(-1/\sqrt{d_{\text{in}}}, 1/\sqrt{d_{\text{in}}})$$
 | `ReLU` | `act(x)`, `grad(x)`, `grad2(x)` | 整流线性单元 |
 | `Tanh` | `act(x)`, `grad(x)`, `grad2(x)` | 双曲正切 |
 | `SoftPlus` | `act(x)`, `grad(x)`, `grad2(x)` | 平滑 ReLU |
+
+## 统一训练契约
+
+Linear 的 forward 和 backward 始终保留 batch 轴；单样本输入梯度为 `(1, in_dim)`。梯度跨前向、重复反向累加，zero_grad 只清参数梯度。`random_state` 控制自身初始化。与量子层组合、微批次缩放和冻结行为见 [训练契约](training_contracts.md)。

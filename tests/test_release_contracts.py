@@ -135,20 +135,26 @@ def test_freeze_survives_forward(model_type):
 
 
 @pytest.mark.parametrize('model_type', [QNN, HQNN])
-def test_inference_invalidates_old_gradients(model_type):
+def test_inference_preserves_pending_gradients_and_invalidates_forward_cache(model_type):
     model = model_type(ansatz(), **({'out_dim': 2} if model_type is HQNN else {}))
     circuits = AngleEncoder()(np.array([[.1, .2], [.3, .4]]))
     output = model.forward(circuits)
     model.backward(np.ones_like(output))
-    bindings = dict(model._ansatz._bindings)
-    weights = model._linear.parameters['W'].copy() if model_type is HQNN else None
     steps = [net._optimizer.cur_step for net in model._nets]
+    from cqlib_qml._state import clone_state
+    reference = clone_state(model)
+    reference.update()
     model.forward(circuits, trainable=False)
+    for net, expected in zip(model._nets, reference._nets):
+        for key in expected.gradients:
+            np.testing.assert_array_equal(net.gradients[key], expected.gradients[key])
+    with pytest.raises(ValueError, match='forward|training'):
+        model.backward(np.ones_like(output))
     model.update()
-    assert dict(model._ansatz._bindings) == bindings
-    assert [net._optimizer.cur_step for net in model._nets] == steps
-    if weights is not None:
-        np.testing.assert_array_equal(model._linear.parameters['W'], weights)
+    assert dict(model._ansatz._bindings) == reference._ansatz._bindings
+    assert [net._optimizer.cur_step for net in model._nets] == [step + 1 for step in steps]
+    if model_type is HQNN:
+        np.testing.assert_array_equal(model._linear.parameters['W'], reference._linear.parameters['W'])
     with pytest.raises(ValueError, match='forward|training'):
         model.backward(np.ones_like(output))
 
@@ -172,7 +178,7 @@ def test_fixed_ansatz_forward():
     a.h(0)
     a.set_measurement(readouts=[0])
     np.testing.assert_allclose(a.forward(), [[0.]], atol=1e-12)
-    assert a.backward() == {}
+    assert a.backward().shape == (1, 0)
 
 
 @pytest.mark.parametrize('image,levels', [([np.nan], 3), ([np.inf], 3), ([-.1], 3), ([1.1], 3), ([.5], 2.5), ([.5], True)])

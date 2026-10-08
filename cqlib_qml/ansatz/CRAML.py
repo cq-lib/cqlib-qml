@@ -149,6 +149,11 @@ class CRAML(Ansatz):
             for gate in migrated["circuit"]["gates"]:
                 gate["params"] = [mapping.get(value, value) if isinstance(value, str) else value
                                   for value in gate["params"]]
+            if "weights" in migrated:
+                migrated["weights"] = {mapping.get(key, key): value for key, value in migrated["weights"].items()}
+            if migrated.get("parameter_roles") is not None:
+                migrated["parameter_roles"] = [[mapping.get(name, name) for name in role]
+                                               for role in migrated["parameter_roles"]]
             optim = migrated.get("optimizer")
             if optim is not None:
                 cache = {}
