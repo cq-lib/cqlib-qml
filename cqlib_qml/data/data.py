@@ -192,6 +192,7 @@ class DataLoader:
     def dataset(self, dataset):
         """Set the dataset and reset iteration state."""
         self._dataset = dataset
+        self._resume_pending = False
         self._it = 0
         self._end = self.__len__()
         self._idx = np.arange(len(self._dataset))
@@ -225,6 +226,7 @@ class DataLoader:
             raise ValueError("batch_size must be a positive integer (not a boolean)")
         from cqlib_qml._state import make_rng
         self._rng = make_rng(random_state)
+        self._resume_pending = False
         self._dataset = dataset
         self._shuffle = shuffle
         self._batch_size = batch_size
@@ -262,11 +264,44 @@ class DataLoader:
             >>> for batch in loader:
             ...     process(batch)
         """
+        if self._resume_pending:
+            self._resume_pending = False
+            return self
         self._it = 0
         if self._shuffle:
             self._idx = np.arange(len(self._dataset))
             self._rng.shuffle(self._idx)
         return self
+
+    def _fingerprint(self):
+        from cqlib_qml._state import data_fingerprint
+        return data_fingerprint(self._dataset._datas)
+
+    def state_dict(self):
+        """Capture the next batch, current permutation and owned RNG."""
+        from copy import deepcopy
+        from cqlib_qml._state import FORMAT_VERSION
+        return {"format_version": FORMAT_VERSION, "batch_size": int(self._batch_size),
+                "shuffle": bool(self._shuffle), "drop_last": bool(self._drop_last),
+                "size": len(self._dataset), "fingerprint": self._fingerprint(),
+                "next_batch": self._it, "permutation": self._idx.copy(),
+                "rng_state": deepcopy(self._rng.bit_generator.state)}
+
+    def load_state_dict(self, state):
+        """Restore atomically; the next iter() continues without reshuffling."""
+        from cqlib_qml._state import validate_loader_state, rng_from_state
+        validate_loader_state(state)
+        expected = (self._batch_size, self._shuffle, self._drop_last, len(self._dataset), self._fingerprint())
+        actual = tuple(state[name] for name in ('batch_size', 'shuffle', 'drop_last', 'size', 'fingerprint'))
+        if actual != expected:
+            raise ValueError("DataLoader dataset or configuration mismatch")
+        index = state['next_batch']
+        order = np.asarray(state['permutation'])
+        if type(index) is not int or not 0 <= index <= self._end or order.dtype.kind not in 'iu' or not np.array_equal(np.sort(order), np.arange(len(self._dataset))):
+            raise ValueError("Invalid DataLoader progress")
+        rng = rng_from_state(state['rng_state'])
+        self._idx, self._it, self._rng = order.copy(), index, rng
+        self._resume_pending = index < self._end
 
     def __next__(self):
         """

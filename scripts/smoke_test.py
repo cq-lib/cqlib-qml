@@ -50,6 +50,7 @@ def main() -> None:
     hqnn.backward(loss.grads())
     hqnn.update()
     assert not np.array_equal(before, hqnn._linear.parameters["W"])
+    hqnn.zero_grad()
     with tempfile.TemporaryDirectory() as directory:
         hqnn.save_checkpoint(directory, ep=1, it=2, latest=True)
         restored = HQNN(ansatz=HEAnsatz(n_qubits=4, d=1, layers=["RY", "CX"]), out_dim=3)

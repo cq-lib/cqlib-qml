@@ -252,16 +252,23 @@ class Layer(ABC):
             >>> print(summary["layer"])
             Linear
         """
-        return {
+        from copy import deepcopy
+        from cqlib_qml._state import FORMAT_VERSION
+        return deepcopy({
+            "format_version": FORMAT_VERSION,
+            "trainable": self._trainable,
+            "training": self.training,
+            "rng_state": self._rng.bit_generator.state,
             "layer": self.hyperparameters["layer"],
             "parameters": self.parameters,
             "hyperparameters": {**self.hyperparameters, "optimizer": (
                 self._optimizer.state_dict() if self._optimizer is not None else None
             )},
-        }
+        })
 
     def load_params(self, summary_dict: dict) -> None:
-        from cqlib_qml._state import clone_state
+        from cqlib_qml._state import clone_state, validate_version
+        validate_version(summary_dict)
         candidate = clone_state(self)
         candidate._load_params_in_place(clone_state(summary_dict))
         self.__dict__.clear()
@@ -281,6 +288,8 @@ class Layer(ABC):
         Examples:
             >>> layer.load_params(saved_summary)
         """
+        from cqlib_qml._state import validate_flags
+        validate_flags(summary_dict)
         if summary_dict["layer"] != self.hyperparameters["layer"]:
             raise ValueError("The layer to be loaded does not match.")
         if summary_dict["hyperparameters"]["in_dim"] != self._in_dim:
@@ -294,12 +303,19 @@ class Layer(ABC):
             self._gradients[key] = np.zeros_like(val)
         for key, val in summary_dict["hyperparameters"].items():
             if key == "optimizer":
+                self._optimizer = None
                 if val is not None:
                     self.set_optimizer(val)
             elif key == "act_fn":
                 if bool(val) ^ bool(self._act_fn):
                     warnings.warn("Activation function mismatch. Check your configuration.")
                 self._act_fn = ActivationInitializer(val)()
+        from cqlib_qml._state import validate_optimizer
+        validate_optimizer(self._optimizer, self._parameters)
         self._init = True
+        self._trainable = summary_dict["trainable"]
+        self.training = summary_dict["training"]
+        from cqlib_qml._state import rng_from_state
+        self._rng = rng_from_state(summary_dict["rng_state"])
         self.zero_grad()
         self._invalidate_gradients()

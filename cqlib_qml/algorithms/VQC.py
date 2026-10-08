@@ -48,10 +48,11 @@ from sklearn.metrics import accuracy_score
 from cqlib.circuit import Circuit
 from cqlib_qml.ansatz import Ansatz
 from cqlib_qml.encoder import AmplitudeEncoder, AngleEncoder, ZZFeatureEncoder
-from cqlib_qml.models import QNN
+from cqlib_qml.models import QNN, Module
 from cqlib_qml.loss import BCELoss, MSELoss, SoftmaxCrossEntropy
 from cqlib_qml.optimizer import OptimizerBase, OptimizerInitializer
-from cqlib_qml._state import clone_state, make_rng, rng_from_state
+from cqlib_qml._state import (FORMAT_VERSION, clone_state, make_rng, rng_from_state, atomic_save,
+                              validate_version, require_clean_gradients)
 
 
 class VQC(ClassifierMixin, BaseEstimator):
@@ -333,27 +334,38 @@ class VQC(ClassifierMixin, BaseEstimator):
         optimizer.reset_state()
         return optimizer
 
+    @staticmethod
+    def _fingerprint(X, y):
+        from cqlib_qml._state import data_fingerprint
+        return data_fingerprint((np.asarray(X), np.asarray(y)))
 
+    @staticmethod
+    def _validate_max_steps(max_steps):
+        if max_steps is not None and (isinstance(max_steps, bool) or
+                                     not isinstance(max_steps, Integral) or max_steps <= 0):
+            raise ValueError("max_steps must be a positive integer or None")
 
-    def fit(self, X, y):
+    def fit(self, X, y, *, max_steps=None):
         """Fit from declared initialization, or retain weights with warm_start.
 
         The construction objects are templates. Learned components are exposed
         as ansatz_ and encoder_. Warm starts reset optimizer/scheduler history.
+        max_steps pauses successfully at a clean mini-batch boundary.
         All operations are staged: failures leave the fitted estimator intact.
         """
         if type(self.warm_start) is not bool:
             raise ValueError("warm_start must be a boolean")
         self._validate_training_config(self.epochs, self.batch_size)
         self._validate_loss_config(self.loss, self.readouts, self.n_classes)
+        self._validate_max_steps(max_steps)
         candidate = clone_state(self)
-        candidate._fit_in_place(X, y)
+        candidate._fit_in_place(X, y, max_steps=max_steps)
         candidate.__dict__.update(self.get_params(deep=False))
         self.__dict__.clear()
         self.__dict__.update(candidate.__dict__)
         return self
 
-    def _fit_in_place(self, X, y):
+    def _fit_in_place(self, X, y, *, max_steps=None):
         X, raw_y = check_X_y(X, y)
         classes, y = np.unique(raw_y, return_inverse=True)
         count = len(classes)
@@ -381,62 +393,189 @@ class VQC(ClassifierMixin, BaseEstimator):
         self._qnn = self._create_qnn()
         self._loss_fn = self._get_loss_fn()
         self._X_fit = X.copy()
+        self._progress = {"epoch": 0, "target_epochs": int(self.epochs), "next_batch": 0,
+                          "permutation": None, "global_step": 0, "epoch_loss": 0.0,
+                          "epoch_correct": 0.0, "fingerprint": self._fingerprint(X, raw_y),
+                          "batch_size": len(X) if self.batch_size is None else int(self.batch_size),
+                          "loss": self.loss, "readouts": list(readouts)}
+        self._resume_complete = True
+        self._run_training(X, y, max_steps)
+
+    def _run_training(self, X, y, max_steps=None):
         circuits = self._encode(X)
-        n_samples = len(X)
-        batch_size = n_samples if self.batch_size is None else self.batch_size
+        p = self._progress
+        steps = 0
+        n_samples, batch_size = len(X), p["batch_size"]
+        while p["epoch"] < p["target_epochs"]:
+            if p["permutation"] is None:
+                p["permutation"] = self._rng.permutation(n_samples)
+            order = p["permutation"]
+            start = p["next_batch"] * batch_size
+            indices = order[start:min(start + batch_size, n_samples)]
+            batch_circuits = [circuits[index] for index in indices]
+            batch_y = y[indices]
+            expectations = self._qnn.forward(batch_circuits, trainable=True)
+            y_pred, y_true = self._prepare_for_loss(expectations, batch_y)
+            loss = self._loss_fn(y_pred, y_true)
+            derivative = -.5 if self.loss == "BCE" else (-1. if self.loss == "MSE" and expectations.shape[1] == 1 else 1.)
+            self._qnn.backward(self._loss_fn.grads(derivative))
+            self._qnn.update(cur_loss=loss)
+            self._qnn.zero_grad()
+            p["epoch_loss"] += loss if self.loss == "CrossEntropy" else loss * len(indices)
+            p["epoch_correct"] += self._compute_accuracy(expectations, batch_y) * len(indices)
+            p["global_step"] += 1
+            p["next_batch"] += 1
+            steps += 1
+            if p["next_batch"] * batch_size >= n_samples:
+                p["epoch"] += 1
+                if self.verbose and p["epoch"] % max(1, p["target_epochs"] // 10) == 0:
+                    print(f"Epoch {p['epoch']}/{p['target_epochs']} - loss: {p['epoch_loss']/n_samples:.4f} - acc: {p['epoch_correct']/n_samples:.4f}")
+                p.update(next_batch=0, permutation=None, epoch_loss=0.0, epoch_correct=0.0)
+            if max_steps is not None and steps >= max_steps:
+                break
 
-        for epoch in range(self.epochs):
-            # Shuffle data for each epoch
-            idx = self._rng.permutation(n_samples)
-            circuits_shuffled = [circuits[i] for i in idx]
-            y_shuffled = y[idx]
+    def resume_fit(self, X, y, *, additional_epochs=0, max_steps=None):
+        """Resume exact training at the next mini-batch, optionally extending it.
 
-            epoch_loss = 0.0
-            epoch_correct = 0
-            n_batches = 0
-
-            # Mini-batch training
-            for start in range(0, n_samples, batch_size):
-                end = min(start + batch_size, n_samples)
-                batch_circuits = circuits_shuffled[start:end]
-                batch_y = y_shuffled[start:end]
-
-                # Forward pass
-                expectations = self._qnn.forward(batch_circuits, trainable=True)
-                y_pred, y_true = self._prepare_for_loss(expectations, batch_y)
-
-                # Compute loss
-                loss = self._loss_fn(y_pred, y_true)
-
-                # Backward pass and optimization
-                prediction_derivative = 1.0
-                if self.loss == "BCE":
-                    prediction_derivative = -0.5
-                elif self.loss == "MSE" and expectations.shape[1] == 1:
-                    prediction_derivative = -1.0
-                self._qnn.backward(self._loss_fn.grads(prediction_derivative))
-                self._qnn.update(cur_loss=loss)
-                self._qnn.zero_grad()
-
-                # MSE/BCE return means; CE returns a sum. Weight batch means
-                # by sample count, including the final partial batch. Multiclass
-                # MSE remains an element mean, not a sum over output classes.
-                # Accumulate metrics
-                epoch_loss += loss if self.loss == "CrossEntropy" else loss * len(batch_circuits)
-                n_batches += 1
-                epoch_correct += self._compute_accuracy(expectations, batch_y) * len(batch_circuits)
-
-            # Print progress
-            if self.verbose and (epoch + 1) % max(1, self.epochs // 10) == 0:
-                acc = epoch_correct / n_samples
-                print(f"Epoch {epoch+1}/{self.epochs} - loss: {epoch_loss/n_samples:.4f} - acc: {acc:.4f}")
-
+        Requires a complete VQC checkpoint (or a successfully paused fit)
+        and identical training data, order, loss, readouts and batch size.
+        """
+        check_is_fitted(self)
+        self._validate_max_steps(max_steps)
+        if isinstance(additional_epochs, bool) or not isinstance(additional_epochs, Integral) or additional_epochs < 0:
+            raise ValueError("additional_epochs must be a nonnegative integer")
+        if not self._resume_complete:
+            raise ValueError("Checkpoint does not contain complete resume state")
+        candidate = clone_state(self)
+        X, raw_y = check_X_y(X, y)
+        p = candidate._progress
+        effective_batch = len(X) if self.batch_size is None else self.batch_size
+        if (candidate._fingerprint(X, raw_y) != p["fingerprint"] or self.loss != p["loss"] or
+                list(self.readouts if self.readouts is not None else [0]) != p["readouts"] or effective_batch != p["batch_size"]):
+            raise ValueError("Exact resume requires identical data and training configuration")
+        _, labels = np.unique(raw_y, return_inverse=True)
+        p["target_epochs"] += int(additional_epochs)
+        candidate._run_training(X, labels, max_steps)
+        candidate.__dict__.update(self.get_params(deep=False))
+        self.__dict__.clear()
+        self.__dict__.update(candidate.__dict__)
         return self
 
+    def save_checkpoint(self, model_path):
+        """Save complete training state at a clean mini-batch boundary."""
+        from pathlib import Path
+        check_is_fitted(self)
+        require_clean_gradients(self._qnn._nets)
+        path = Path(model_path)
+        if path.suffix != '.npy':
+            path = path / 'model.npy'
+        config = self.get_params(deep=False).copy()
+        config.pop('ansatz')
+        config.pop('encoder')
+        config.pop('random_state')
+        config['optimizer'] = self._fresh_optimizer().state_dict()
+        state = {"format_version": FORMAT_VERSION, "kind": "VQC", "config": config,
+                 "template": self.ansatz.summary, "model": self.ansatz_.summary,
+                 "encoder": {"type": type(self.encoder_).__name__, "state": deepcopy(self.encoder_.__dict__)},
+                 "classes": self._classes.copy(), "X_fit": self._X_fit.copy(),
+                 "progress": deepcopy(self._progress), "rng_state": deepcopy(self._rng.bit_generator.state),
+                 "initial_rng_state": deepcopy(self._initial_rng_state), "resume_complete": self._resume_complete}
+        atomic_save(path, state)
 
+    def load_checkpoint(self, model_path):
+        """Validate a complete checkpoint before replacing any estimator state."""
+        from pathlib import Path
+        path = Path(model_path)
+        if path.is_dir():
+            path = path / 'model.npy'
+        try:
+            state = np.load(path, allow_pickle=True).item()
+            validate_version(state)
+            if state.get('kind') != 'VQC':
+                raise ValueError("Not a VQC checkpoint")
+            for name in ('template', 'model'):
+                validate_version(state[name])
+            candidate = clone_state(self)
+            config = deepcopy(state['config'])
+            if set(config) != set(self.get_params()) - {'ansatz', 'encoder', 'random_state'}:
+                raise ValueError("Invalid VQC configuration fields")
+            for key, value in config.items():
+                setattr(candidate, key, value)
+            candidate._validate_training_config(candidate.epochs, candidate.batch_size)
+            candidate._validate_loss_config(candidate.loss, candidate.readouts, candidate.n_classes)
+            candidate._fresh_optimizer()
+            candidate.ansatz = clone_state(self.ansatz)
+            candidate.ansatz.load_params(state['template'])
+            candidate.ansatz_ = clone_state(candidate.ansatz)
+            candidate.ansatz_.load_params(state['model'])
+            enc = state['encoder']
+            registry = {cls.__name__: cls for cls in (AmplitudeEncoder, AngleEncoder, ZZFeatureEncoder)}
+            cls = registry.get(enc['type'])
+            if cls is None:
+                raise ValueError("Unsupported encoder checkpoint")
+            args = {key.lstrip('_'): value for key, value in enc['state'].items()}
+            candidate.encoder_ = cls(**args)
+            candidate.encoder = clone_state(candidate.encoder_)
+            candidate._qnn = QNN.__new__(QNN)
+            Module.__init__(candidate._qnn, candidate.ansatz_)
+            candidate._qnn._ansatz = candidate.ansatz_
+            candidate._classes = np.asarray(state['classes']).copy()
+            candidate._X_fit = check_array(state['X_fit']).copy()
+            candidate._progress = deepcopy(state['progress'])
+            candidate._rng = rng_from_state(state['rng_state'])
+            candidate._initial_rng_state = deepcopy(rng_from_state(state['initial_rng_state']).bit_generator.state)
+            candidate.random_state = rng_from_state(candidate._initial_rng_state)
+            if type(state['resume_complete']) is not bool:
+                raise ValueError('Invalid resume completeness flag')
+            candidate._resume_complete = state['resume_complete']
+            candidate._loss_fn = candidate._get_loss_fn()
+            candidate._validate_progress()
+        except Exception as exc:
+            raise ValueError(f"Invalid VQC checkpoint: {exc}") from exc
+        self.__dict__.clear()
+        self.__dict__.update(candidate.__dict__)
+        return self
 
-
-
+    def _validate_progress(self):
+        p = self._progress
+        n = len(self._X_fit)
+        for key in ('epoch', 'target_epochs', 'next_batch', 'global_step', 'batch_size'):
+            if type(p[key]) is not int or p[key] < 0:
+                raise ValueError("Invalid training progress")
+        if not p['batch_size'] or p['epoch'] > p['target_epochs'] or p['next_batch'] * p['batch_size'] >= n:
+            raise ValueError("Invalid next batch position")
+        permutation = p['permutation']
+        if type(p['target_epochs']) is not int or p['target_epochs'] <= 0:
+            raise ValueError("Invalid target epoch count")
+        batches = int(np.ceil(n / p['batch_size']))
+        if p['global_step'] != p['epoch'] * batches + p['next_batch']:
+            raise ValueError("Training progress counters disagree")
+        expected_batch = n if self.batch_size is None else self.batch_size
+        expected_readouts = list(self.readouts if self.readouts is not None else [0])
+        if p['batch_size'] != expected_batch or p['loss'] != self.loss or p['readouts'] != expected_readouts:
+            raise ValueError("Checkpoint training configuration disagrees with progress")
+        if any(not isinstance(p[name], (int, float, np.number)) or not np.isfinite(p[name])
+               for name in ('epoch_loss', 'epoch_correct')):
+            raise ValueError("Invalid epoch statistics")
+        if not 0 <= p['epoch_correct'] <= min(p['next_batch'] * p['batch_size'], n):
+            raise ValueError("Invalid epoch accuracy statistics")
+        if permutation is None:
+            if p['next_batch'] != 0:
+                raise ValueError("Missing shuffle permutation")
+        elif (np.asarray(permutation).dtype.kind not in 'iu' or p['epoch'] == p['target_epochs'] or
+              not np.array_equal(np.sort(permutation), np.arange(n))):
+            raise ValueError("Invalid shuffle permutation")
+        if len(self._classes) < 2 or len(set(self._classes)) != len(self._classes):
+            raise ValueError("Invalid class mapping")
+        if (not isinstance(p['fingerprint'], str) or len(p['fingerprint']) != 64 or
+                any(char not in '0123456789abcdef' for char in p['fingerprint'])):
+            raise ValueError("Invalid data fingerprint")
+        if set(self.ansatz_._weights) != set(self.ansatz_.weight_params) or self.ansatz_._optimizer is None:
+            raise ValueError("Incomplete learned quantum state")
+        binary = self.loss == 'BCE' or (self.loss == 'MSE' and len(self._classes) == 2)
+        expected_outputs = 1 if binary else len(self._classes)
+        if self.ansatz_.out_dim != expected_outputs or (self.loss == 'BCE' and len(self._classes) != 2):
+            raise ValueError("Checkpoint classes and quantum outputs disagree")
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         """

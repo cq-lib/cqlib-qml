@@ -94,8 +94,8 @@ $$f(x; \boldsymbol{\theta}) = \langle 0 | U_{\text{enc}}(x)^\dagger U_{\text{ans
 | `freeze()` | 冻结所有组件 |
 | `unfreeze()` | 解冻所有组件 |
 | `random_init()` | 随机初始化 |
-| `save_checkpoint(model_path, ep, it, latest=False)` | 保存检查点 |
-| `load_checkpoint(model_path)` | 加载检查点 |
+| `save_checkpoint(model_path, ep, it, latest=False, *, data_loader=None)` | 保存检查点及可选数据顺序 |
+| `load_checkpoint(model_path, *, data_loader=None)` | 加载检查点及可选数据顺序 |
 
 ### 完整使用示例
 
@@ -400,8 +400,8 @@ HQNN 结合了量子计算的高维特征表示能力和经典计算的线性变
 | `freeze()` | 冻结 |
 | `unfreeze()` | 解冻 |
 | `random_init()` | 随机初始化 |
-| `save_checkpoint(model_path, ep, it, latest=False)` | 保存检查点 |
-| `load_checkpoint(model_path)` | 加载检查点 |
+| `save_checkpoint(model_path, ep, it, latest=False, *, data_loader=None)` | 保存检查点及可选数据顺序 |
+| `load_checkpoint(model_path, *, data_loader=None)` | 加载检查点及可选数据顺序 |
 
 ### QNN
 
@@ -433,7 +433,3 @@ HQNN 结合了量子计算的高维特征表示能力和经典计算的线性变
 Checkpoint 初始格式版本为 `format_version=1`，保存冻结、角色、微分器、优化器、调度器和随机状态。有未清零梯度时不能保存。使用 `data_loader=loader` 可保存及恢复项目 DataLoader 的排列与下一批游标；外部数据管线需自行保存数据进度。loader 已完成 epoch 时返回 `(epoch+1, 0)`，否则保留 `(epoch, iteration+1)`。加载时拒绝缺少版本、版本不受支持或必要字段不完整的文件。
 
 加载会清空 Jacobian、梯度和反向缓存；恢复后直接 update 不推进优化器。详细混合网络、累积训练及恢复示例见 [训练契约](training_contracts.md)。
-
-Checkpoint 恢复模型参数、线路结构、测量配置及已保存的优化器/调度器状态，返回 `(epoch, iteration + 1)`。它没有完整保存随机数状态、数据迭代顺序、微分器配置和冻结状态，因此不保证任意训练过程精确续跑。
-
-加载 checkpoint 或调用 `load_params()` 会清除旧梯度、Jacobian 和反向缓存；恢复后直接调用 `update()` 不修改参数或推进优化器。

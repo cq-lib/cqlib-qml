@@ -175,7 +175,7 @@ class Linear(Layer):
         if set(parameters) != set(expected):
             raise ValueError("Checkpoint parameter keys do not match the layer.")
         for name, shape in expected.items():
-            if np.shape(parameters[name]) != shape:
+            if np.shape(parameters[name]) != shape or np.iscomplexobj(parameters[name]) or not np.all(np.isfinite(parameters[name])):
                 raise ValueError(f"Checkpoint parameter {name} shape does not match {shape}.")
         super()._load_params_in_place(summary_dict)
         self._X = []

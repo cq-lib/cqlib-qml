@@ -861,3 +861,8 @@ QKM 接受一维单样本或二维非空有限数值批次，振幅编码支持�
 MNIST 示例独立创建输出目录，不依赖 TensorBoard。验证集固定顺序且保留最后一个不足批次；准确率以实际样本数为分母。验证损失按每样本均值报告：求和损失累计后除以总样本数，均值损失先按批次实际样本数加权。空验证集报错。
 
 训练示例将当前损失传给 `update(cur_loss=loss)`，可搭配 KingScheduler。
+
+
+## 统一训练契约
+
+VQC 构造器新增 `warm_start=False`、`initial_point=None`、`random_state=None`。默认重复 fit 从声明初始化重训；warm start 保留权重并在优化器副本上重置优化器/调度器状态；完整恢复用 `save_checkpoint/load_checkpoint/resume_fit`。fit 不修改构造模板，学习参数从 `ansatz_` 读取。失败时也保留随机状态和训练进度。示例和兼容迁移见 [训练契约](training_contracts.md)。

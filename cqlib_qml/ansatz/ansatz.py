@@ -130,9 +130,16 @@ class Ansatz:
     @property
     def summary(self) -> dict:
         """Dictionary containing the ansatz information."""
+        from cqlib_qml._state import FORMAT_VERSION
         return copy.deepcopy({
+            "format_version": FORMAT_VERSION,
             "parameter_roles": copy.deepcopy(self._roles),
             "weights": copy.deepcopy(self._weights),
+            "trainable": self._trainable,
+            "training": self.training,
+            "rng_state": copy.deepcopy(self._rng.bit_generator.state),
+            "differentiator": {"method": "parameter_shift", "shift": self._differentiator._shift}
+                if isinstance(self._differentiator, ParameterShiftDifferentiator) else {"method": "adjoint"},
             "ansatz": f"{self.__class__.__name__}",
             "in_dim": self.in_dim,
             "out_dim": self.out_dim,
@@ -745,7 +752,8 @@ class Ansatz:
         return np.array(expectations), state.data
 
     def load_params(self, summary_dict: dict) -> None:
-        from cqlib_qml._state import clone_state
+        from cqlib_qml._state import clone_state, validate_version
+        validate_version(summary_dict)
         candidate = clone_state(self)
         candidate._load_params_in_place(clone_state(summary_dict))
         self.__dict__.clear()
@@ -765,6 +773,11 @@ class Ansatz:
             raise ValueError("The input dimensions to be loaded do not match.")
         if not (self._out_dim == 0 or summary_dict["out_dim"] == self._out_dim):
             raise ValueError("The output dimensions to be loaded do not match.")
+        from cqlib_qml._state import validate_flags
+        validate_flags(summary_dict)
+        for field in ('weights', 'parameter_roles', 'differentiator'):
+            if field not in summary_dict:
+                raise ValueError(f"Missing checkpoint field: {field}")
         self._roles = None
         self._bindings = None
         self._assigned_cir = None
@@ -826,6 +839,14 @@ class Ansatz:
             if set(self._weights) != set(self.weight_params):
                 raise ValueError("Checkpoint weight bindings incomplete")
             self.assign_weights(self._weights)
+        diff = summary_dict["differentiator"]
+        self.set_differentiator(diff["method"], diff.get("shift", np.pi / 2))
+        self._trainable = summary_dict["trainable"]
+        self.training = summary_dict["training"]
+        from cqlib_qml._state import rng_from_state
+        self._rng = rng_from_state(summary_dict["rng_state"])
+        from cqlib_qml._state import validate_optimizer
+        validate_optimizer(self._optimizer, self._weights)
         self._encoder = None
         self.zero_grad()
         self._invalidate_gradients()

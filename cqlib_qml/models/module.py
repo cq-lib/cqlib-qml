@@ -29,7 +29,6 @@ Examples:
 """
 
 import os
-import shutil
 from copy import deepcopy
 from typing import Union, Optional
 
@@ -257,7 +256,7 @@ class Module:
     def eval(self):
         return self.train(False)
 
-    def save_checkpoint(self, model_path: str, ep: int, it: int, latest: bool = False) -> None:
+    def save_checkpoint(self, model_path: str, ep: int, it: int, latest: bool = False, *, data_loader=None) -> None:
         """
         Save the model state as a checkpoint.
 
@@ -270,12 +269,21 @@ class Module:
             it (int): Current iteration number.
             latest (bool, optional): Whether this is the latest checkpoint.
                 If True, saves as model.npy. Defaults to False.
+            data_loader (DataLoader, optional): Project loader whose permutation,
+                next-batch cursor and random state are saved. Defaults to None.
+
+        Raises:
+            ValueError: If parameter gradients have not been cleared with zero_grad.
 
         Examples:
             >>> model.save_checkpoint("./checkpoints", ep=10, it=100)
             >>> model.save_checkpoint("./checkpoints", ep=10, it=100, latest=True)
         """
-        checkpoint = dict()
+        from cqlib_qml._state import FORMAT_VERSION, atomic_save, require_clean_gradients
+        require_clean_gradients(self._nets)
+        checkpoint = {"format_version": FORMAT_VERSION, "training": self.training,
+                      "rng_state": deepcopy(self._rng.bit_generator.state),
+                      "data_loader": data_loader.state_dict() if data_loader is not None else None}
         module_info = dict()
         for i in range(len(self._nets)):
             if isinstance(self._nets[i], Ansatz):
@@ -290,27 +298,26 @@ class Module:
         checkpoint["module"] = module_info
 
         os.makedirs(model_path, exist_ok=True)
-        np.save("{}/model.npy".format(model_path), checkpoint)
+        atomic_save("{}/model.npy".format(model_path), checkpoint)
         if not latest:
-            shutil.copy(
-                "{0}/model.npy".format(model_path),
-                "{0}/{1}_{2}.npy".format(model_path, ep, it),
-            )
+            atomic_save("{0}/{1}_{2}.npy".format(model_path, ep, it), checkpoint)
 
-    def load_checkpoint(self, model_path: str) -> tuple:
+    def load_checkpoint(self, model_path: str, *, data_loader=None) -> tuple:
         """
         Load a model checkpoint from disk.
 
         Args:
             model_path (str): Path to the checkpoint file or directory.
+            data_loader (DataLoader, optional): Restore iterator state while
+                preserving its dataset and underlying data references.
 
         Returns:
-            tuple: (epoch, iteration) where:
-                - epoch (int): Restored epoch number
-                - iteration (int): Restored iteration number + 1
+            tuple: Next (epoch, iteration). Returns (saved epoch, saved iteration
+                + 1), or (saved epoch + 1, 0) when the saved loader finished its epoch.
 
         Raises:
-            ValueError: If the checkpoint file cannot be found or loaded.
+            ValueError: If the checkpoint cannot be read or its model or loader
+                state is incompatible. Validation failures preserve live state.
 
         Examples:
             >>> ep, it = model.load_checkpoint("./checkpoints/model.npy")
@@ -328,6 +335,7 @@ class Module:
                 raise ValueError("No numbered checkpoints found.")
             return max(candidates)[2]
 
+        model_path = os.fspath(model_path)
         try:
             if model_path.endswith(".npy"):
                 fname = model_path
@@ -342,27 +350,58 @@ class Module:
             raise ValueError(f"Invalid model path: {model_path}. Error: {e}")
 
         try:
-            from copy import deepcopy
+            from cqlib_qml._state import clone_state, validate_version, rng_from_state
             data = checkpoint.item()
+            validate_version(data)
+            if type(data.get('training')) is not bool or 'rng_state' not in data or 'data_loader' not in data:
+                raise ValueError("Incomplete Module checkpoint")
+            for value in data['module'].values():
+                validate_version(value)
             ep, it = data["epoch"], data["iter"]
-            values = list(data["module"].values())
-            if len(values) != len(self._nets):
+            if any(type(value) is not int or value < 0 for value in (ep, it)):
+                raise ValueError("Invalid checkpoint progress")
+            if len(data["module"]) != len(self._nets):
                 raise ValueError("Checkpoint component count does not match model.")
-            # Validate every component on a copy before changing the live model.
+            expected_keys = [f"{'ansatz' if isinstance(net, Ansatz) else 'layer'}{index}"
+                             for index, net in enumerate(self._nets)]
+            if list(data['module']) != expected_keys:
+                raise ValueError("Checkpoint component order or type mismatch")
+            values = list(data["module"].values())
+            candidates = []
             for val, net in zip(values, self._nets):
-                # Hamiltonians are native objects that cannot be pickled; validation
-                # replaces measurements without modifying the existing observables.
-                memo = {id(ham): ham for ham in (getattr(net, "_hams", None) or [])}
-                candidate = deepcopy(net, memo)
-                candidate.load_params(deepcopy(val))
-            for val, net in zip(values, self._nets):
-                net.load_params(val)
+                candidate = clone_state(net)
+                candidate.load_params(clone_state(val))
+                candidates.append(candidate)
+            rng = rng_from_state(data["rng_state"])
+            loader_state = data['data_loader']
+            resume_position = (ep, it + 1)
+            if loader_state is not None:
+                from cqlib_qml._state import validate_loader_state
+                batches = validate_loader_state(loader_state)
+                if loader_state['next_batch'] == batches:
+                    resume_position = (ep + 1, 0)
+            loader_candidate = None
+            if data_loader is not None and data.get("data_loader") is not None:
+                # The dataset is caller-owned and only read during validation.
+                # Stage iterator state without copying or replacing shared data.
+                loader_candidate = deepcopy(data_loader, {id(data_loader.dataset): data_loader.dataset})
+                loader_candidate.load_state_dict(data["data_loader"])
+            for candidate, net in zip(candidates, self._nets):
+                net.__dict__.clear()
+                net.__dict__.update(candidate.__dict__)
+            self._rng = rng
+            self.training = data["training"]
             self._forward_valid = False
+            self._resume_data_loader_state = deepcopy(data["data_loader"])
+            self._checkpoint_complete = data["data_loader"] is not None
+            if loader_candidate is not None:
+                for name in ('_idx', '_it', '_rng', '_resume_pending'):
+                    data_loader.__dict__[name] = loader_candidate.__dict__[name]
         except Exception as e:
             raise ValueError(f"Mismatched model. Error: {e}")
 
         print(f"Successfully restored checkpoint at ep: {ep} it: {it}")
-        return ep, it + 1
+        return resume_position
 
     def freeze(self) -> None:
         """
