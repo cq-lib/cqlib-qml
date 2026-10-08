@@ -172,6 +172,9 @@ def validate_loader_state(state):
     for name in ('shuffle', 'drop_last'):
         if type(state[name]) is not bool:
             raise ValueError('Invalid DataLoader configuration')
+    started = state.get('iteration_started', True)
+    if type(started) is not bool or (not started and state['next_batch'] != 0):
+        raise ValueError('Invalid DataLoader iteration state')
     batches = (state['size'] // state['batch_size'] if state['drop_last']
                else (state['size'] + state['batch_size'] - 1) // state['batch_size'])
     order = np.asarray(state['permutation'])

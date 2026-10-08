@@ -507,6 +507,7 @@ class VQC(ClassifierMixin, BaseEstimator):
             candidate.ansatz = clone_state(self.ansatz)
             candidate.ansatz.load_params(state['template'])
             candidate.ansatz_ = clone_state(candidate.ansatz)
+            candidate.ansatz_.set_measurement(readouts=candidate.readouts if candidate.readouts is not None else [0])
             candidate.ansatz_.load_params(state['model'])
             enc = state['encoder']
             registry = {cls.__name__: cls for cls in (AmplitudeEncoder, AngleEncoder, ZZFeatureEncoder)}

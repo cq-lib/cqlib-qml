@@ -669,3 +669,90 @@ def test_loader_restore_resave_preserves_cursor_and_next_epoch(drop_last, finish
     actual = list(second)
     assert_exact_state(actual, expected)
     assert_exact_state(second.state_dict(), source.state_dict())
+
+
+def test_vqc_checkpoint_restores_overridden_template_readouts(tmp_path):
+    source = estimator(readouts=[0])
+    source.ansatz.set_measurement(readouts=[0, 1])
+    source.fit(X, Y, max_steps=1)
+    source.save_checkpoint(tmp_path)
+
+    restored = estimator().load_checkpoint(tmp_path)
+    assert restored.ansatz.readouts == source.ansatz.readouts == [0, 1]
+    assert restored.ansatz_.readouts == source.ansatz_.readouts == [0]
+    np.testing.assert_array_equal(restored.predict_proba(X), source.predict_proba(X))
+    source.resume_fit(X, Y)
+    restored.resume_fit(X, Y)
+    np.testing.assert_array_equal(restored.ansatz_.weights, source.ansatz_.weights)
+    assert_exact_state(restored.ansatz_._optimizer.state_dict(), source.ansatz_._optimizer.state_dict())
+
+
+@pytest.mark.parametrize('started', [False, True])
+@pytest.mark.parametrize('via_module', [False, True])
+def test_loader_restore_before_first_batch_preserves_shuffle(tmp_path, started, via_module):
+    dataset = Dataset(np.arange(10))
+    source = DataLoader(dataset, batch_size=2, drop_last=False, random_state=7)
+    if started:
+        iter(source)
+    saved = source.state_dict()
+    restored = DataLoader(dataset, batch_size=2, drop_last=False, random_state=99)
+    if not started:
+        iter(restored)
+    if via_module:
+        network().save_checkpoint(tmp_path, 0, 0, data_loader=source)
+        network().load_checkpoint(tmp_path, data_loader=restored)
+    else:
+        restored.load_state_dict(saved)
+    assert_exact_state(restored.state_dict(), saved)
+
+    # Direct next() preserves an already-created permutation; fresh iter() shuffles.
+    expected = [next(source) for _ in range(len(source))] if started else list(source)
+    assert_exact_state(list(restored), expected)
+    assert_exact_state(restored.state_dict(), source.state_dict())
+
+
+def test_loader_restores_format_one_without_iteration_started():
+    dataset = Dataset(np.arange(10))
+    source = DataLoader(dataset, batch_size=2, drop_last=False, random_state=7)
+    next(iter(source))
+    saved = source.state_dict()
+    saved.pop('iteration_started')
+    restored = DataLoader(dataset, batch_size=2, drop_last=False)
+    restored.load_state_dict(saved)
+    expected = [next(source) for _ in range(len(source) - 1)]
+    assert_exact_state(list(restored), expected)
+    assert_exact_state(restored.state_dict(), source.state_dict())
+
+
+@pytest.mark.parametrize('hybrid', [False, True])
+def test_random_init_discards_old_gradients_and_forward_cache(hybrid):
+    q = Ansatz(1)
+    q.ry(0, Parameter('theta'))
+    q.set_measurement(readouts=[0])
+    q.assign_weights([.3])
+    components = [q, Linear(1, 1)] if hybrid else [q]
+    model = Module(*components, random_state=2)
+    model.set_optimizer('sgd(lr=.1)')
+    model.backward(np.ones_like(model.forward()))
+    assert q.gradients['theta'] != 0
+
+    model.random_init()
+    with pytest.raises(ValueError):
+        model.backward(np.ones((1, 1)))
+    with pytest.raises(ValueError):
+        q.backward()
+    if hybrid:
+        with pytest.raises(ValueError):
+            components[1].backward(np.ones((1, 1)))
+
+    weights = q.weights.copy()
+    model.update()
+    np.testing.assert_array_equal(q.weights, weights)
+    for net in components:
+        assert net._optimizer.cur_step == 0
+        assert not any(np.any(value) for value in net.gradients.values())
+
+    model.backward(np.ones_like(model.forward()))
+    model.update()
+    assert not np.array_equal(q.weights, weights)
+    assert all(net._optimizer.cur_step == 1 for net in components)
