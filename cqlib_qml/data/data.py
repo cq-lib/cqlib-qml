@@ -227,6 +227,7 @@ class DataLoader:
         from cqlib_qml._state import make_rng
         self._rng = make_rng(random_state)
         self._resume_pending = False
+        self._iteration_started = False
         self._dataset = dataset
         self._shuffle = shuffle
         self._batch_size = batch_size
@@ -271,6 +272,7 @@ class DataLoader:
         if self._shuffle:
             self._idx = np.arange(len(self._dataset))
             self._rng.shuffle(self._idx)
+        self._iteration_started = True
         return self
 
     def _fingerprint(self):
@@ -285,10 +287,11 @@ class DataLoader:
                 "shuffle": bool(self._shuffle), "drop_last": bool(self._drop_last),
                 "size": len(self._dataset), "fingerprint": self._fingerprint(),
                 "next_batch": self._it, "permutation": self._idx.copy(),
+                "iteration_started": self._iteration_started,
                 "rng_state": deepcopy(self._rng.bit_generator.state)}
 
     def load_state_dict(self, state):
-        """Restore atomically; the next iter() continues without reshuffling."""
+        """Restore atomically; iter() shuffles only a fresh or finished epoch."""
         from cqlib_qml._state import validate_loader_state, rng_from_state
         validate_loader_state(state)
         expected = (self._batch_size, self._shuffle, self._drop_last, len(self._dataset), self._fingerprint())
@@ -301,7 +304,8 @@ class DataLoader:
             raise ValueError("Invalid DataLoader progress")
         rng = rng_from_state(state['rng_state'])
         self._idx, self._it, self._rng = order.copy(), index, rng
-        self._resume_pending = index < self._end
+        self._iteration_started = state.get('iteration_started', True)
+        self._resume_pending = self._iteration_started and index < self._end
 
     def __next__(self):
         """
@@ -319,6 +323,7 @@ class DataLoader:
         """
         if self._it < self._end:
             ret_data = self._dataset[self._idx[self._it * self._batch_size : (self._it + 1) * self._batch_size]]
+            self._iteration_started = True
             self._it += 1
             return ret_data
         else:

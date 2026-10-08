@@ -117,7 +117,7 @@ trained_weights = restored.ansatz_.weights
 
 Module 继续支持 `save_checkpoint(path, ep, it, latest=False)` 和 `load_checkpoint(path)`；可通过 `data_loader=loader` 保存/恢复项目 DataLoader 状态。没有 loader 状态时只承诺模型状态恢复，外部数据管线需要自行保存顺序和随机性。未结束 epoch 返回 `(ep, it+1)`；保存的 loader 已结束 epoch 时返回 `(ep+1, 0)`。自带 QNN/HQNN 分类循环使用恢复的排列及游标，不重复打乱或跳过数据。
 
-DataLoader 新增 `random_state`、`state_dict()` 和 `load_state_dict()`。加载时验证数据指纹和批次配置；恢复后的第一次 `iter(loader)` 从下一批继续。epoch 已结束时，第一次 iter 使用恢复的 RNG 创建下一轮排列。
+DataLoader 新增 `random_state`、`state_dict()` 和 `load_state_dict()`。加载时验证数据指纹和批次配置；恢复后的第一次 `iter(loader)` 从下一批继续。尚未开始迭代或 epoch 已结束时，第一次 iter 使用恢复的 RNG 创建排列；已开始但尚未取批次时保留原排列。
 
 Module 恢复 DataLoader 时仅替换已验证的排列、游标和随机状态，保留调用者的 Dataset 及底层数据引用，不复制整个数据集。
 

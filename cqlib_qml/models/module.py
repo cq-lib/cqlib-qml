@@ -188,6 +188,7 @@ class Module:
         This method initializes parameters randomly for both layers and
         ansätze. For ansätze, parameters are drawn from a standard normal
         distribution. For layers, the default initialization method is used.
+        Accumulated gradients and forward caches are discarded.
 
         Examples:
             >>> model.random_init()
@@ -199,6 +200,8 @@ class Module:
                 net._rng = deepcopy(self._rng)
                 net.init_params()
                 self._rng = deepcopy(net._rng)
+        self.zero_grad()
+        self._invalidate_gradients()
 
     def set_optimizer(self, optimizer: Union[str, dict, OptimizerBase] = "adam") -> None:
         """
@@ -395,7 +398,7 @@ class Module:
             self._resume_data_loader_state = deepcopy(data["data_loader"])
             self._checkpoint_complete = data["data_loader"] is not None
             if loader_candidate is not None:
-                for name in ('_idx', '_it', '_rng', '_resume_pending'):
+                for name in ('_idx', '_it', '_rng', '_resume_pending', '_iteration_started'):
                     data_loader.__dict__[name] = loader_candidate.__dict__[name]
         except Exception as e:
             raise ValueError(f"Mismatched model. Error: {e}")
