@@ -16,10 +16,13 @@ def main():
         with tarfile.open(args.archive) as archive:
             names = archive.getnames()
             for suffix in ('docs/tutorials/models.md', 'docs/tutorials/encoder.md',
+                           'docs/tutorials/training_contracts.md', 'cqlib_qml/_state.py',
                            'scripts/release_check.sh', 'scripts/smoke_test.py',
                            'scripts/verify_wheel.py', 'tests/test_release_contracts.py'):
                 if not any(name.endswith('/' + suffix) for name in names):
                     raise ValueError(f'sdist is missing {suffix}')
+            if not any('/release_notes/' in name and name.endswith('.md') for name in names):
+                raise ValueError('sdist is missing release notes')
             if any('/docs/api/' in name for name in names):
                 raise ValueError('Generated API HTML must not enter the sdist')
             archive.extractall(directory, filter='data')
