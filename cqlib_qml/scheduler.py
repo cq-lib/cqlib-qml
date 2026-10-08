@@ -83,6 +83,14 @@ class SchedulerBase(ABC):
         """
         return deepcopy(self)
 
+    def reset_state(self):
+        """Reset training history, preserving configuration and concrete type.
+
+        Stateless schedulers need no reset. Custom adaptive schedulers should
+        override this hook to clear their additional history and return self.
+        """
+        return self
+
     def set_params(self, hparam_dict: dict):
         """
         Set scheduler hyperparameters from a dictionary.
@@ -491,6 +499,12 @@ class KingScheduler(SchedulerBase):
                 self.current_lr = self.initial_lr
             if "patience" in hparam_dict:
                 self.max_history = max(4, int(np.ceil(1.1 * (self.patience + 1))))
+        return self
+
+    def reset_state(self):
+        """Restore the declared initial learning rate and discard loss history."""
+        self.current_lr = self.initial_lr
+        self.loss_history = []
         return self
 
     def _steps_without_decrease(self, robust=False, check_all=False) -> int:

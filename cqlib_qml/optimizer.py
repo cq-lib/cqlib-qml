@@ -114,6 +114,21 @@ class OptimizerBase(ABC):
         self.cur_step = 0
         self._lr_step = None
 
+    def reset_state(self):
+        """Reset training history while preserving type and configuration.
+
+        Clears parameter caches, step counters and adaptive scheduler history.
+        Subclasses with additional training state should override this method,
+        call ``super().reset_state()`` and clear their own history. VQC calls
+        this hook on a private copy for fresh fits and weights-only warm starts.
+        """
+        self.cache = {}
+        self.cur_step = 0
+        self._lr_step = None
+        self._step_lr = None
+        self.lr_scheduler.reset_state()
+        return self
+
     def copy(self):
         """
         Return a copy of the optimizer.

@@ -445,16 +445,16 @@ def test_vqc_invalid_refit_keeps_existing_training_state(name):
     model.fit(X, [0, 1])
     before = model.predict(X)
     qnn, classes, training_data = model._qnn, model._classes, model._X_fit
-    bindings = dict(model.ansatz._bindings)
-    steps = model.ansatz._optimizer.cur_step
+    bindings = dict(model.ansatz_._bindings)
+    steps = model.ansatz_._optimizer.cur_step
     setattr(model, name, -1)
     with pytest.raises(ValueError, match=name):
         model.fit(X, [10, 20])
     assert model._qnn is qnn
     assert model._classes is classes
     assert model._X_fit is training_data
-    assert model.ansatz._bindings == bindings
-    assert model.ansatz._optimizer.cur_step == steps
+    assert model.ansatz_._bindings == bindings
+    assert model.ansatz_._optimizer.cur_step == steps
     np.testing.assert_array_equal(model.predict(X), before)
 
 
@@ -475,7 +475,7 @@ def test_vqc_invalid_set_params_is_atomic(name):
 def test_vqc_valid_training_config_performs_updates(batch_size, expected_steps):
     model = VQC(ansatz(), AngleEncoder(), epochs=np.int64(1), batch_size=batch_size, verbose=False)
     assert model.fit([[.1, .2], [.3, .4]], [0, 1]) is model
-    assert model.ansatz._optimizer.cur_step == expected_steps
+    assert model.ansatz_._optimizer.cur_step == expected_steps
     assert model.predict([[.1, .2]]).shape == (1,)
 
 
@@ -568,15 +568,16 @@ def test_failed_vqc_fit_keeps_previous_state(previous_fit, failure_phase):
             model.predict(X)
 
 
-def test_successful_vqc_refit_preserves_ansatz_reference():
+def test_successful_vqc_refit_preserves_template_reference_and_owns_learned_ansatz():
     circuit = ansatz()
     model = VQC(circuit, AngleEncoder(), epochs=1, verbose=False)
     X = np.array([[.1, .2], [.3, .4]])
     model.fit(X, [0, 1])
     model.fit(X, ['cat', 'dog'])
     assert model.ansatz is circuit
-    assert model._qnn._ansatz is circuit
-    assert model._qnn._nets[0] is circuit
+    assert model._qnn._ansatz is model.ansatz_
+    assert model.ansatz_ is not circuit
+    assert model._qnn._nets[0] is model.ansatz_
     assert set(model.predict(X)) <= {'cat', 'dog'}
 
 
@@ -589,12 +590,14 @@ def test_vqc_late_training_failure_preserves_supplied_optimizer():
     model = VQC(circuit, encoder, optimizer=optimizer, epochs=1, batch_size=1, verbose=False)
     X = np.array([[.1, .2], [.3, .4]])
     model.fit(X, [0, 1])
-    assert circuit._optimizer is optimizer
-    assert optimizer.cur_step == 2
+    assert circuit._optimizer is None
+    assert optimizer.cur_step == 0
+    learned_optimizer = model.ansatz_._optimizer
+    assert learned_optimizer.cur_step == 2
     qnn = model._qnn
     before = model.predict(X)
-    bindings = dict(circuit._bindings)
-    state = pickle.dumps(optimizer.state_dict())
+    bindings = dict(model.ansatz_._bindings)
+    state = pickle.dumps(learned_optimizer.state_dict())
     update = QNN.update
     calls = []
 
@@ -611,9 +614,11 @@ def test_vqc_late_training_failure_preserves_supplied_optimizer():
     assert model._qnn is qnn
     assert model.ansatz is circuit
     assert model.encoder is encoder
-    assert circuit._optimizer is optimizer
-    assert circuit._bindings == bindings
-    assert pickle.dumps(optimizer.state_dict()) == state
+    assert circuit._optimizer is None
+    assert model.ansatz_._optimizer is learned_optimizer
+    assert model.ansatz_._bindings == bindings
+    assert pickle.dumps(learned_optimizer.state_dict()) == state
+    assert optimizer.cur_step == 0
     np.testing.assert_array_equal(model.predict(X), before)
 
 
@@ -629,5 +634,6 @@ def test_staged_vqc_fit_supports_all_public_encoders(encoding):
     model.fit(X, ['cat', 'dog'])
     assert model.ansatz is circuit
     assert model.encoder is encoder
-    assert model._qnn._ansatz is circuit
+    assert model._qnn._ansatz is model.ansatz_
+    assert model.ansatz_ is not circuit
     assert set(model.predict(X)) <= {'cat', 'dog'}

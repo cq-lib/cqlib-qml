@@ -273,7 +273,10 @@ VQC(
     n_classes: int = 2,
     epochs: int = 100,
     batch_size: Optional[int] = None,
-    verbose: bool = True
+    verbose: bool = True,
+    warm_start: bool = False,
+    initial_point=None,
+    random_state=None
 )
 ```
 
@@ -288,6 +291,9 @@ VQC(
 | `epochs` | int | 训练轮数 |
 | `batch_size` | int | 批次大小 |
 | `verbose` | bool | 是否打印训练进度 |
+| `warm_start` | bool | 保留已学习权重，重置优化器和调度器状态 |
+| `initial_point` | array/dict/None | 按 weight_params 顺序声明初始权重 |
+| `random_state` | int/Generator/None | 初始化和打乱使用的模型随机流 |
 
 训练日志中的 epoch loss：MSE 对所有样本和输出元素取均值；BCE 对样本取均值；CrossEntropy 对每样本的交叉熵取均值。多分类 MSE 不对类别维度求和，数值因此不能直接与 CrossEntropy 比较。最后一个不足 batch_size 的批次按实际样本数加权。
 
@@ -305,9 +311,6 @@ from sklearn.datasets import make_classification
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 import numpy as np
-
-# 设置随机种子
-np.random.seed(42)
 
 # 1. 生成数据
 X, y = make_classification(
@@ -341,7 +344,8 @@ vqc = VQC(
     optimizer="adam(lr=0.1)",
     epochs=100,
     batch_size=32,
-    verbose=True
+    verbose=True,
+    random_state=42  # 控制模型初始化和每轮数据打乱
 )
 
 # 4. 训练
@@ -355,17 +359,17 @@ print(f"测试准确率: {vqc.score(X_test, y_test):.4f}")
 **训练输出：**
 
 ```
-Epoch 10/100 - loss: 0.3064 - acc: 0.8917
-Epoch 20/100 - loss: 0.3055 - acc: 0.9000
-Epoch 30/100 - loss: 0.3059 - acc: 0.9000
-Epoch 40/100 - loss: 0.3111 - acc: 0.8875
-Epoch 50/100 - loss: 0.3067 - acc: 0.8875
-Epoch 60/100 - loss: 0.3073 - acc: 0.8792
-Epoch 70/100 - loss: 0.3139 - acc: 0.8875
-Epoch 80/100 - loss: 0.3133 - acc: 0.8875
-Epoch 90/100 - loss: 0.3068 - acc: 0.8833
-Epoch 100/100 - loss: 0.3059 - acc: 0.9000
-训练准确率: 0.9000
+Epoch 10/100 - loss: 0.3053 - acc: 0.8875
+Epoch 20/100 - loss: 0.3065 - acc: 0.8917
+Epoch 30/100 - loss: 0.3120 - acc: 0.8833
+Epoch 40/100 - loss: 0.3069 - acc: 0.8917
+Epoch 50/100 - loss: 0.3072 - acc: 0.8750
+Epoch 60/100 - loss: 0.3090 - acc: 0.8875
+Epoch 70/100 - loss: 0.3050 - acc: 0.8875
+Epoch 80/100 - loss: 0.3169 - acc: 0.8625
+Epoch 90/100 - loss: 0.3062 - acc: 0.8875
+Epoch 100/100 - loss: 0.3064 - acc: 0.8917
+训练准确率: 0.8958
 测试准确率: 0.9667
 ```
 
@@ -396,18 +400,18 @@ print(proba[:5])
 **输出：**
 
 ```
-[[0.99134206 0.00865794]
- [0.26961095 0.73038905]
- [0.29691407 0.70308593]
- [0.93700417 0.06299583]
- [0.37263155 0.62736845]]
+[[0.99209248 0.00790752]
+ [0.28748801 0.71251199]
+ [0.31477729 0.68522271]
+ [0.93581571 0.06418429]
+ [0.38962802 0.61037198]]
 ```
 
 ### 损失函数与 readouts 的匹配规则
 
 | 损失函数 | readouts 要求 | 适用场景 |
 |----------|---------------|----------|
-| `"MSE"` | 任意数量 | 回归、多标签分类 |
+| `"MSE"` | 二分类恰好 1 个；多分类等于实际类别数 | 二分类、多分类 |
 | `"BCE"` | 恰好 1 个 | 二分类 |
 | `"CrossEntropy"` | 等于 `n_classes` | 多分类 |
 
@@ -422,7 +426,7 @@ vqc_binary = VQC(
 
 # 三分类
 vqc_multi = VQC(
-    ansatz=ansatz,
+    ansatz=HEAnsatz(n_qubits=3, d=2, layers=["RY", "CX"]),
     encoder=encoder,
     readouts=[0, 1, 2],
     loss="CrossEntropy",

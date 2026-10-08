@@ -74,3 +74,14 @@ for start, end in [(0, 1), (1, 2)]:
 model.update()
 model.zero_grad()
 ```
+
+## VQC：重训、warm start 和完整恢复
+
+`VQC(..., warm_start=False, initial_point=None, random_state=None)` 的构造对象是模板，fit 不修改调用者的 Ansatz、编码器或优化器。学习组件通过 `ansatz_`、`encoder_` 读取；sklearn clone 只复制构造配置。
+
+| 路径 | 权重 | 优化器和调度器 | RNG、进度 |
+|---|---|---|---|
+| 默认 `fit(X, y)` | 从声明的初始状态开始 | 配置副本调用 reset_state | 从模型初始随机状态开始 |
+| `warm_start=True` 后再次 fit | 沿用学习权重 | 配置副本调用 reset_state，动量和历史清空 | 沿用 RNG 流，开始新的训练轮次 |
+
+初始化优先级为 `initial_point` → 模板中的完整权重绑定 → 模型 Generator 的标准正态初始化。整数 random_state 的独立模型可复现；None 的模型各自获取随机状态，同一模型默认重复 fit 仍从其初始状态开始。传入 Generator 时复制其状态，不消耗调用者的生成器。全局 `np.random.seed` 不再控制模型初始化或 DataLoader 打乱。

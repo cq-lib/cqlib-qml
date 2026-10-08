@@ -39,7 +39,7 @@ from cqlib_qml._configuration import same_parameter_value
 
 import numpy as np
 from numbers import Integral
-from copy import copy, deepcopy
+from copy import deepcopy
 from typing import Union, Optional, List, Dict, Any
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
@@ -50,8 +50,8 @@ from cqlib_qml.ansatz import Ansatz
 from cqlib_qml.encoder import AmplitudeEncoder, AngleEncoder, ZZFeatureEncoder
 from cqlib_qml.models import QNN
 from cqlib_qml.loss import BCELoss, MSELoss, SoftmaxCrossEntropy
-from cqlib_qml.optimizer import OptimizerBase
-from cqlib_qml._state import make_rng
+from cqlib_qml.optimizer import OptimizerBase, OptimizerInitializer
+from cqlib_qml._state import clone_state, make_rng, rng_from_state
 
 
 class VQC(ClassifierMixin, BaseEstimator):
@@ -134,6 +134,8 @@ class VQC(ClassifierMixin, BaseEstimator):
         epochs: int = 100,
         batch_size: Optional[int] = None,
         verbose: bool = True,
+        warm_start: bool = False,
+        initial_point=None,
         random_state=None,
     ):
         """Initialize the VQC model.
@@ -148,6 +150,9 @@ class VQC(ClassifierMixin, BaseEstimator):
             epochs: Number of training epochs. Defaults to 100.
             batch_size: Batch size for mini-batch training. Defaults to None.
             verbose: Whether to print progress during training. Defaults to True.
+            warm_start: Reuse learned weights on fit, resetting optimizer and scheduler.
+            initial_point: Complete initial weight vector or mapping. Takes precedence
+                over declared template bindings on a fresh fit.
             random_state: Integer, Generator (copied) or None. Owns initialization
                 and shuffling; does not change the caller's random state.
 
@@ -165,13 +170,22 @@ class VQC(ClassifierMixin, BaseEstimator):
         self.epochs = epochs
         self.batch_size = batch_size
         self.verbose = verbose
+        self.warm_start = warm_start
+        self.initial_point = initial_point
         self.random_state = random_state
         self._rng = make_rng(random_state)
+        self._initial_rng_state = deepcopy(self._rng.bit_generator.state)
+        self._progress = None
+        self._resume_complete = False
 
         self._qnn = None
         self._loss_fn = None
         self._classes = None
         self._X_fit = None
+
+    def __sklearn_clone__(self):
+        """Clone construction templates only, including native observables."""
+        return type(self)(**clone_state(self.get_params(deep=False)))
 
     def __sklearn_is_fitted__(self):
         return self._qnn is not None and self._X_fit is not None
@@ -214,11 +228,11 @@ class VQC(ClassifierMixin, BaseEstimator):
         Returns:
             QNN: Configured Quantum Neural Network model.
         """
-        self.ansatz.set_measurement(readouts=self.readouts if self.readouts is not None else [0])
+        self.ansatz_.set_measurement(readouts=self.readouts if self.readouts is not None else [0])
         return QNN(
-            ansatz=self.ansatz,
+            ansatz=self.ansatz_,
             readouts=self.readouts,
-            optimizer=self.optimizer,
+            optimizer=self._fresh_optimizer(),
         )
 
     def _encode(self, X: np.ndarray) -> List[Circuit]:
@@ -241,7 +255,7 @@ class VQC(ClassifierMixin, BaseEstimator):
 
         circuits = []
         for x in X:
-            result = self.encoder(x)
+            result = getattr(self, "encoder_", self.encoder)(x)
             circuits.append(result[0] if isinstance(result, list) else result)
         return circuits
 
@@ -261,7 +275,7 @@ class VQC(ClassifierMixin, BaseEstimator):
         """
         y = np.asarray(y)
         if self.loss == "MSE":
-            if self.n_classes > 2:
+            if (len(self._classes) if self._classes is not None else self.n_classes) > 2:
                 # Multi-class: one-hot encoding
                 n_samples = len(y)
                 y_true = np.zeros(expectations.shape)
@@ -297,7 +311,7 @@ class VQC(ClassifierMixin, BaseEstimator):
         """
         y = np.asarray(y)
         if self.loss == "MSE":
-            if self.n_classes > 2:
+            if (len(self._classes) if self._classes is not None else self.n_classes) > 2:
                 pred_labels = np.argmax(expectations, axis=1)
                 correct = np.sum(pred_labels == y)
             else:
@@ -313,83 +327,60 @@ class VQC(ClassifierMixin, BaseEstimator):
 
         return correct / len(y)
 
-    def fit(self, X: np.ndarray, y: np.ndarray) -> "VQC":
+    def _fresh_optimizer(self):
+        """Warm start deliberately retains weights only, never optimizer history."""
+        optimizer = OptimizerInitializer(clone_state(self.optimizer))()
+        optimizer.reset_state()
+        return optimizer
+
+
+
+    def fit(self, X, y):
+        """Fit from declared initialization, or retain weights with warm_start.
+
+        The construction objects are templates. Learned components are exposed
+        as ansatz_ and encoder_. Warm starts reset optimizer/scheduler history.
+        All operations are staged: failures leave the fitted estimator intact.
         """
-        Fit the VQC model to the training data.
-
-        Args:
-            X (np.ndarray): Training data of shape (n_samples, n_features).
-            y (np.ndarray): Target labels of shape (n_samples,).
-
-        Returns:
-            VQC: The fitted VQC instance.
-
-        Raises:
-            ValueError: If epochs or batch_size is not a positive integer.
-                Only batch_size accepts None for full-batch training. Booleans
-                are not accepted. Validation precedes changes to fitted state.
-
-        Note:
-            Training uses mini-batch gradient descent with the specified
-            optimizer and loss function.
-            Fitting is staged on private copies. A failed fit preserves the
-            last successful model, labels, parameters and optimizer state.
-            Verbose epoch loss is MSE averaged over samples and output elements,
-            BCE averaged over samples, or CrossEntropy averaged over samples.
-
-        Examples:
-            >>> vqc.fit(X_train, y_train)
-        """
+        if type(self.warm_start) is not bool:
+            raise ValueError("warm_start must be a boolean")
         self._validate_training_config(self.epochs, self.batch_size)
         self._validate_loss_config(self.loss, self.readouts, self.n_classes)
-        candidate = copy(self)
-        candidate._rng = deepcopy(self._rng)
-        # Native Hamiltonians cannot be pickled; training only reads them.
-        memo = {id(ham): ham for ham in (getattr(self.ansatz, '_hams', None) or [])}
-        candidate.ansatz = deepcopy(self.ansatz, memo)
-        candidate.ansatz._rng = deepcopy(self._rng)
-        candidate.encoder = deepcopy(self.encoder)
-        candidate.optimizer = deepcopy(self.optimizer)
+        candidate = clone_state(self)
         candidate._fit_in_place(X, y)
-
-        # Publish only after every encoding and training step succeeds. Keep
-        # user-supplied object references connected to the trained model.
-        if isinstance(self.optimizer, OptimizerBase):
-            self.optimizer.__dict__.clear()
-            self.optimizer.__dict__.update(candidate.ansatz._optimizer.__dict__)
-            candidate.ansatz._optimizer = self.optimizer
-        self.ansatz.__dict__.clear()
-        self.ansatz.__dict__.update(candidate.ansatz.__dict__)
-        self.encoder.__dict__.clear()
-        self.encoder.__dict__.update(candidate.encoder.__dict__)
-        candidate._qnn._ansatz = self.ansatz
-        candidate._qnn._nets[0] = self.ansatz
-        self._rng = candidate._rng
-        self._qnn = candidate._qnn
-        self._loss_fn = candidate._loss_fn
-        self._classes = candidate._classes
-        self._X_fit = candidate._X_fit
-        self.n_classes = candidate.n_classes
+        candidate.__dict__.update(self.get_params(deep=False))
+        self.__dict__.clear()
+        self.__dict__.update(candidate.__dict__)
         return self
 
     def _fit_in_place(self, X, y):
-        """Fit a private candidate; only fit() publishes its resulting state."""
-        X, y = check_X_y(X, y)
-        classes, y = np.unique(y, return_inverse=True)
+        X, raw_y = check_X_y(X, y)
+        classes, y = np.unique(raw_y, return_inverse=True)
         count = len(classes)
         readouts = self.readouts if self.readouts is not None else [0]
-        if count < 2:
-            raise ValueError("Classification requires at least two classes.")
         binary = self.loss == "BCE" or (self.loss == "MSE" and count == 2)
         expected = 1 if binary else count
-        if (self.loss == "BCE" and count != 2) or len(readouts) != expected:
-            raise ValueError(f"Loss {self.loss} with {count} classes requires {expected} readouts and a compatible class count.")
+        if count < 2 or (self.loss == "BCE" and count != 2) or len(readouts) != expected:
+            raise ValueError(f"Loss {self.loss} with {count} classes requires {expected} compatible readouts")
+        warm = self.warm_start and self.__sklearn_is_fitted__()
+        if warm:
+            if not np.array_equal(self._classes, classes) or X.shape[1] != self.n_features_in_:
+                raise ValueError("Warm start requires the same classes and feature dimension")
+        else:
+            self._rng = rng_from_state(self._initial_rng_state)
+            self.ansatz_ = clone_state(self.ansatz)
+            self.encoder_ = clone_state(self.encoder)
+            self.ansatz_._encoder = None
+            self.ansatz_.zero_grad()
+            self.ansatz_._invalidate_gradients()
+            if self.initial_point is not None:
+                self.ansatz_.assign_weights(self.initial_point)
+            elif set(self.ansatz_._weights) != set(self.ansatz_.weight_params):
+                self.ansatz_.assign_weights(self._rng.normal(size=self.ansatz_.num_weights))
         self._classes = classes
-        self.n_classes = count
-
         self._qnn = self._create_qnn()
         self._loss_fn = self._get_loss_fn()
-
+        self._X_fit = X.copy()
         circuits = self._encode(X)
         n_samples = len(X)
         batch_size = n_samples if self.batch_size is None else self.batch_size
@@ -440,8 +431,12 @@ class VQC(ClassifierMixin, BaseEstimator):
                 acc = epoch_correct / n_samples
                 print(f"Epoch {epoch+1}/{self.epochs} - loss: {epoch_loss/n_samples:.4f} - acc: {acc:.4f}")
 
-        self._X_fit = X
         return self
+
+
+
+
+
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         """
@@ -464,7 +459,7 @@ class VQC(ClassifierMixin, BaseEstimator):
         expectations = self._qnn.forward(circuits, trainable=False)
 
         if self.loss == "MSE":
-            if self.n_classes > 2:
+            if (len(self._classes) if self._classes is not None else self.n_classes) > 2:
                 return self._classes[expectations.argmax(axis=1)]
             else:
                 probabilities = (1 - expectations) / 2
@@ -496,7 +491,7 @@ class VQC(ClassifierMixin, BaseEstimator):
         expectations = self._qnn.forward(circuits, trainable=False)
 
         if self.loss == "MSE":
-            if self.n_classes > 2:
+            if (len(self._classes) if self._classes is not None else self.n_classes) > 2:
                 # Softmax transformation
                 exp_vals = np.exp(expectations - np.max(expectations, axis=1, keepdims=True))
                 return exp_vals / np.sum(exp_vals, axis=1, keepdims=True)
@@ -555,6 +550,8 @@ class VQC(ClassifierMixin, BaseEstimator):
             "epochs": self.epochs,
             "batch_size": self.batch_size,
             "verbose": self.verbose,
+            "warm_start": self.warm_start,
+            "initial_point": self.initial_point,
             "random_state": self.random_state,
         }
 
@@ -588,5 +585,10 @@ class VQC(ClassifierMixin, BaseEstimator):
         if changed:
             if 'random_state' in params:
                 self._rng = make_rng(self.random_state)
+                self._initial_rng_state = deepcopy(self._rng.bit_generator.state)
+            self._progress = None
+            self._resume_complete = False
+            for name in ('ansatz_', 'encoder_'):
+                self.__dict__.pop(name, None)
             self._qnn = self._loss_fn = self._classes = self._X_fit = None
         return self

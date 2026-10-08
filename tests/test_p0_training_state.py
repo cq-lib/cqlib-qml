@@ -128,3 +128,23 @@ def test_qnn_and_hqnn_owned_random_initialization():
         first = cls(HEAnsatz(2, 1, layers=['RY']), readouts=[0], random_state=23, **kwargs)
         second = cls(HEAnsatz(2, 1, layers=['RY']), readouts=[0], random_state=23, **kwargs)
         np.testing.assert_array_equal(first.forward(circuits), second.forward(circuits))
+
+def test_fresh_repeated_fit_clone_and_initial_point():
+    model, other = estimator(), estimator()
+    model.fit(X, Y)
+    other.fit(X, Y)
+    np.testing.assert_array_equal(model.ansatz_.weights, other.ansatz_.weights)
+    first = model.ansatz_.weights.copy()
+    model.fit(X, Y)
+    np.testing.assert_array_equal(model.ansatz_.weights, first)
+    assert model.ansatz._weights == {}  # configuration never gains learning state
+    assert model.n_classes == 2
+    cloned = clone(model)
+    assert not cloned.__sklearn_is_fitted__()
+    assert cloned.ansatz._weights == {}
+    cloned.fit(X, Y)
+    np.testing.assert_array_equal(cloned.ansatz_.weights, first)
+    point = np.linspace(.1, .5, model.ansatz.num_weights)
+    initialized = estimator(initial_point=point, optimizer='sgd(lr=0)').fit(X, Y)
+    np.testing.assert_array_equal(initialized.ansatz_.weights, point)
+    np.testing.assert_array_equal(point, initialized.initial_point)
