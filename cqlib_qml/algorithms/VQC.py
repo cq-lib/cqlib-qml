@@ -51,6 +51,7 @@ from cqlib_qml.encoder import AmplitudeEncoder, AngleEncoder, ZZFeatureEncoder
 from cqlib_qml.models import QNN
 from cqlib_qml.loss import BCELoss, MSELoss, SoftmaxCrossEntropy
 from cqlib_qml.optimizer import OptimizerBase
+from cqlib_qml._state import make_rng
 
 
 class VQC(ClassifierMixin, BaseEstimator):
@@ -133,6 +134,7 @@ class VQC(ClassifierMixin, BaseEstimator):
         epochs: int = 100,
         batch_size: Optional[int] = None,
         verbose: bool = True,
+        random_state=None,
     ):
         """Initialize the VQC model.
 
@@ -146,6 +148,8 @@ class VQC(ClassifierMixin, BaseEstimator):
             epochs: Number of training epochs. Defaults to 100.
             batch_size: Batch size for mini-batch training. Defaults to None.
             verbose: Whether to print progress during training. Defaults to True.
+            random_state: Integer, Generator (copied) or None. Owns initialization
+                and shuffling; does not change the caller's random state.
 
         Raises:
             ValueError: If loss type is incompatible with readouts.
@@ -161,6 +165,8 @@ class VQC(ClassifierMixin, BaseEstimator):
         self.epochs = epochs
         self.batch_size = batch_size
         self.verbose = verbose
+        self.random_state = random_state
+        self._rng = make_rng(random_state)
 
         self._qnn = None
         self._loss_fn = None
@@ -337,9 +343,11 @@ class VQC(ClassifierMixin, BaseEstimator):
         self._validate_training_config(self.epochs, self.batch_size)
         self._validate_loss_config(self.loss, self.readouts, self.n_classes)
         candidate = copy(self)
+        candidate._rng = deepcopy(self._rng)
         # Native Hamiltonians cannot be pickled; training only reads them.
         memo = {id(ham): ham for ham in (getattr(self.ansatz, '_hams', None) or [])}
         candidate.ansatz = deepcopy(self.ansatz, memo)
+        candidate.ansatz._rng = deepcopy(self._rng)
         candidate.encoder = deepcopy(self.encoder)
         candidate.optimizer = deepcopy(self.optimizer)
         candidate._fit_in_place(X, y)
@@ -356,6 +364,7 @@ class VQC(ClassifierMixin, BaseEstimator):
         self.encoder.__dict__.update(candidate.encoder.__dict__)
         candidate._qnn._ansatz = self.ansatz
         candidate._qnn._nets[0] = self.ansatz
+        self._rng = candidate._rng
         self._qnn = candidate._qnn
         self._loss_fn = candidate._loss_fn
         self._classes = candidate._classes
@@ -387,7 +396,7 @@ class VQC(ClassifierMixin, BaseEstimator):
 
         for epoch in range(self.epochs):
             # Shuffle data for each epoch
-            idx = np.random.permutation(n_samples)
+            idx = self._rng.permutation(n_samples)
             circuits_shuffled = [circuits[i] for i in idx]
             y_shuffled = y[idx]
 
@@ -546,6 +555,7 @@ class VQC(ClassifierMixin, BaseEstimator):
             "epochs": self.epochs,
             "batch_size": self.batch_size,
             "verbose": self.verbose,
+            "random_state": self.random_state,
         }
 
     def set_params(self, **params) -> "VQC":
@@ -569,10 +579,14 @@ class VQC(ClassifierMixin, BaseEstimator):
         self._validate_loss_config(params.get('loss', self.loss),
                                    params.get('readouts', self.readouts),
                                    params.get('n_classes', self.n_classes))
+        if "random_state" in params:
+            make_rng(params["random_state"])
         changed = False
         for key, value in params.items():
             changed = changed or not same_parameter_value(getattr(self, key), value)
             setattr(self, key, value)
         if changed:
+            if 'random_state' in params:
+                self._rng = make_rng(self.random_state)
             self._qnn = self._loss_fn = self._classes = self._X_fit = None
         return self

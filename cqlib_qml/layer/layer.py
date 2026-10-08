@@ -79,8 +79,10 @@ class Layer(ABC):
         """Dictionary containing the layer hyperparameters."""
         return None
 
-    def __init__(self):
+    def __init__(self, *, random_state=None):
         """Initialize a Layer instance."""
+        from cqlib_qml._state import make_rng
+        self._rng = make_rng(random_state)
         self._forward_valid = False
         self._gradient_valid = False
         self._tracks_gradient_validity = False

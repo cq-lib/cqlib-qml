@@ -98,6 +98,7 @@ class Linear(Layer):
         out_dim: int,
         bias: bool = True,
         act_fn: str = None,
+        *, random_state=None,
     ):
         """
         Initialize a Linear layer.
@@ -107,8 +108,9 @@ class Linear(Layer):
             out_dim (int): Output dimension.
             bias (bool, optional): Include bias term. Defaults to True.
             act_fn (str, optional): Activation function. Defaults to None.
+            random_state (int/Generator/None): Independent random stream.
         """
-        super(Linear, self).__init__()
+        super(Linear, self).__init__(random_state=random_state)
         self._in_dim = in_dim
         self._out_dim = out_dim
         self._bias = bias
@@ -155,11 +157,11 @@ class Linear(Layer):
         """
         # Kaiming uniform initialization for weights
         b = np.sqrt(1 / self._in_dim)
-        W = np.random.uniform(-b, b, size=(self._out_dim, self._in_dim))
+        W = self._rng.uniform(-b, b, size=(self._out_dim, self._in_dim))
         self._parameters["W"] = W
         self._gradients["W"] = np.zeros_like(W)
         if self._bias:
-            bias = np.random.uniform(-b, b, size=(1, self._out_dim))
+            bias = self._rng.uniform(-b, b, size=(1, self._out_dim))
             self._parameters["b"] = bias
             self._gradients["b"] = np.zeros_like(bias)
         self._init = True

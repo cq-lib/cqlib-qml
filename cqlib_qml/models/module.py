@@ -30,6 +30,7 @@ Examples:
 
 import os
 import shutil
+from copy import deepcopy
 from typing import Union, Optional
 
 import numpy as np
@@ -76,7 +77,7 @@ class Module:
         >>> model = Module(ansatz1, ansatz2)
     """
 
-    def __init__(self, *args: Union[Layer, Ansatz]):
+    def __init__(self, *args: Union[Layer, Ansatz], random_state=None):
         """
         Initialize a Module instance.
 
@@ -91,7 +92,13 @@ class Module:
             >>> model = Module(ansatz, linear)
             >>> model = Module(linear1, linear2)
         """
+        from cqlib_qml._state import make_rng
+        self._rng = make_rng(random_state)
         self._nets = self._validate_nets(list(args))
+        if random_state is not None:
+            from cqlib_qml._state import make_rng
+            for net in self._nets:
+                net._rng = make_rng(int(self._rng.integers(0, 2**63)))
 
     def forward(self, x=None, *, retain_derived=True):
         """
@@ -189,11 +196,13 @@ class Module:
         for net in self._nets:
             if isinstance(net, Ansatz):
                 keys = net.symbols
-                values = np.random.randn(len(net.symbols))
+                values = self._rng.normal(size=len(net.symbols))
                 bindings = dict(zip(keys, values))
                 net.assign_parameters(bindings)
             else:
+                net._rng = deepcopy(self._rng)
                 net.init_params()
+                self._rng = deepcopy(net._rng)
 
     def set_optimizer(self, optimizer: Union[str, dict, OptimizerBase] = "adam") -> None:
         """

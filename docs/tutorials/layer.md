@@ -97,7 +97,8 @@ $$y = xW^T + b$$
         in_dim: int,
         out_dim: int,
         bias: bool = True,
-        act_fn: str = None
+        act_fn: str = None,
+        *, random_state=None
     )
 
 | 参数 | 类型 | 描述 |
@@ -105,6 +106,7 @@ $$y = xW^T + b$$
 | `in_dim` | int | 输入维度 |
 | `out_dim` | int | 输出维度 |
 | `bias` | bool | 是否使用偏置 |
+| `random_state` | int/Generator/None | 控制自身参数初始化的随机流 |
 | `act_fn` | str | 激活函数名称：`"sigmoid"`, `"relu"`, `"tanh"`, `"softplus"`, `None` |
 
 ### 参数初始化

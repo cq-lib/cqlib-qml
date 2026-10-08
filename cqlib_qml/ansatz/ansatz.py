@@ -178,17 +178,20 @@ class Ansatz:
         """Iterator over all operations in the circuit."""
         return self._circuit.operations
 
-    def __init__(self, qubits: int | list[int] | list[Qubit]) -> None:
+    def __init__(self, qubits: int | list[int] | list[Qubit], *, random_state=None) -> None:
         """
         Initialize an Ansatz instance.
 
         Args:
             qubits: Number of qubits or list of qubit indices/objects.
+            random_state (int/Generator/None): Independent random stream.
 
         Note:
             This initializes an empty circuit. Subclasses should call this
             and then add gates using the circuit construction methods.
         """
+        from cqlib_qml._state import make_rng
+        self._rng = make_rng(random_state)
         self._circuit = Circuit(qubits)
         self._assigned_cir = None
         self._bindings = None
@@ -304,7 +307,7 @@ class Ansatz:
             if not self._assigned_value():
                 keys = self.symbols
                 previous = self._bindings or {}
-                self._bindings = {key: previous[key] if key in previous else np.random.randn()
+                self._bindings = {key: previous[key] if key in previous else self._rng.normal()
                                   for key in keys}
                 self._assigned_cir = self._circuit.assign_parameters(self._bindings)
             # encoder + ansatz

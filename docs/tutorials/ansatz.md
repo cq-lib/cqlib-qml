@@ -69,7 +69,7 @@ ansatz/
 
 ```python
 class Ansatz:
-    def __init__(self, qubits: int | list[int] | list[Qubit]):
+    def __init__(self, qubits: int | list[int] | list[Qubit], *, random_state=None):
         self._circuit = Circuit(qubits)      # 底层量子电路
         self._bindings = None                # 参数绑定字典
         self._gradients = {}                 # 参数梯度

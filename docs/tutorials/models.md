@@ -156,7 +156,8 @@ $$f_{\text{QNN}}(x) = \langle 0 | U_{\text{enc}}(x)^\dagger U_{\text{ansatz}}(\b
         ansatz: Ansatz,
         readouts: list = None,
         params: np.ndarray = None,
-        optimizer: Union[str, dict, OptimizerBase] = "adam"
+        optimizer: Union[str, dict, OptimizerBase] = "adam",
+        *, random_state=None
     )
 
 | 参数 | 类型 | 描述 |
@@ -165,6 +166,7 @@ $$f_{\text{QNN}}(x) = \langle 0 | U_{\text{enc}}(x)^\dagger U_{\text{ansatz}}(\b
 | `readouts` | list | 测量量子比特索引 |
 | `params` | np.ndarray | 初始参数值 |
 | `optimizer` | str/dict/OptimizerBase | 优化器 |
+| `random_state` | int/Generator/None | 控制模型自身初始化的随机流 |
 
 ### 使用示例
 
@@ -229,15 +231,18 @@ HQNN 结合了量子计算的高维特征表示能力和经典计算的线性变
         ansatz: HEAnsatz,
         out_dim: int,
         params: np.ndarray = None,
-        optimizer: Union[str, dict, OptimizerBase] = "adam"
+        optimizer: Union[str, dict, OptimizerBase] = "adam",
+        *, readouts: list = None, random_state=None
     )
 
 | 参数 | 类型 | 描述 |
 |------|------|------|
 | `ansatz` | HEAnsatz | 参数化量子电路（必须是 HEAnsatz） |
 | `out_dim` | int | 输出维度 |
+| `readouts` | list/None | 测量量子比特索引（仅关键字） |
 | `params` | np.ndarray | 初始参数值 |
 | `optimizer` | str/dict/OptimizerBase | 优化器 |
+| `random_state` | int/Generator/None | 控制模型自身初始化的随机流 |
 
 ### 使用示例
 
@@ -406,6 +411,7 @@ HQNN 结合了量子计算的高维特征表示能力和经典计算的线性变
 | `readouts` | list | 测量量子比特 |
 | `params` | np.ndarray | 初始参数 |
 | `optimizer` | str/dict/OptimizerBase | 优化器 |
+| `random_state` | int/Generator/None | 控制模型自身初始化的随机流 |
 
 ### HQNN
 
@@ -415,6 +421,7 @@ HQNN 结合了量子计算的高维特征表示能力和经典计算的线性变
 | `out_dim` | int | 输出维度 |
 | `params` | np.ndarray | 初始参数 |
 | `optimizer` | str/dict/OptimizerBase | 优化器 |
+| `random_state` | int/Generator/None | 控制模型自身初始化的随机流 |
 ## 训练状态与恢复范围
 
 `freeze()` 持续生效，只有显式 `unfreeze()` 才解除冻结。QNN/HQNN 的 `forward(..., trainable=False)` 仅执行本次推理，不改变冻结状态，并清除量子和经典组件的旧梯度与反向缓存。推理后 `update()` 不更新参数或推进优化器；再次反向必须先执行训练前向。Module/Ansatz 可使用仅关键字参数 `retain_derived=False` 表达相同行为。冻结的中间层在训练前向中仍能传播输入梯度。

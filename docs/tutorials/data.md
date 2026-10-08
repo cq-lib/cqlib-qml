@@ -108,7 +108,8 @@ DataLoader(
     dataset: Dataset,
     batch_size: int = 1,
     shuffle: bool = True,
-    drop_last: bool = True
+    drop_last: bool = True,
+    *, random_state=None
 )
 ```
 
@@ -118,6 +119,7 @@ DataLoader(
 | `batch_size` | int | 每批样本数量，默认 1 |
 | `shuffle` | bool | 是否在每个 epoch 随机打乱数据 |
 | `drop_last` | bool | 是否丢弃最后一个不完整批次 |
+| `random_state` | int/Generator/None | 控制独立的批次打乱随机流 |
 
 ### 核心方法
 

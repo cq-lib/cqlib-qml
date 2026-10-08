@@ -59,6 +59,7 @@ class QNN(Module):
             Defaults to None.
         optimizer (Union[str, dict, OptimizerBase], optional): The optimizer
             for training. Defaults to "adam".
+        random_state (int/Generator/None): Independent initialization RNG.
 
     Attributes:
         _ansatz (Ansatz): The quantum circuit ansatz.
@@ -86,6 +87,7 @@ class QNN(Module):
         readouts: list = None,
         params: np.ndarray = None,
         optimizer: Union[str, dict, OptimizerBase] = "adam",
+        *, random_state=None,
     ):
         """
         Initialize a QNN model.
@@ -95,6 +97,7 @@ class QNN(Module):
             readouts (list, optional): Readout qubits. Defaults to None.
             params (np.ndarray, optional): Initial parameters. Defaults to None.
             optimizer (Union[str, dict, OptimizerBase]): Optimizer. Defaults to "adam".
+            random_state (int/Generator/None): Independent initialization RNG.
 
         Raises:
             ValueError: If readouts are not available.
@@ -108,7 +111,7 @@ class QNN(Module):
         if readouts is None:
             raise ValueError("Must provide readouts.")
         self._ansatz.set_measurement(readouts=readouts)
-        super(QNN, self).__init__(self._ansatz)
+        super(QNN, self).__init__(self._ansatz, random_state=random_state)
         self.set_optimizer(optimizer)
 
     def forward(self, data_circuits: Union[Circuit, List[Circuit]], trainable: bool = True):

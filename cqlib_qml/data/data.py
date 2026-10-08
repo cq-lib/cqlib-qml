@@ -202,6 +202,7 @@ class DataLoader:
         batch_size: int = 1,
         shuffle: bool = True,
         drop_last: bool = True,
+        *, random_state=None,
     ):
         """
         Initialize a DataLoader instance.
@@ -212,6 +213,7 @@ class DataLoader:
                 NumPy integers are accepted; booleans are rejected. Defaults to 1.
             shuffle (bool, optional): Shuffle data each epoch. Defaults to True.
             drop_last (bool, optional): Drop incomplete batches. Defaults to True.
+            random_state (int/Generator/None): Independent random stream.
 
         Raises:
             ValueError: If batch_size is not a positive integer.
@@ -221,6 +223,8 @@ class DataLoader:
         """
         if isinstance(batch_size, bool) or not isinstance(batch_size, Integral) or batch_size <= 0:
             raise ValueError("batch_size must be a positive integer (not a boolean)")
+        from cqlib_qml._state import make_rng
+        self._rng = make_rng(random_state)
         self._dataset = dataset
         self._shuffle = shuffle
         self._batch_size = batch_size
@@ -261,7 +265,7 @@ class DataLoader:
         self._it = 0
         if self._shuffle:
             self._idx = np.arange(len(self._dataset))
-            np.random.shuffle(self._idx)
+            self._rng.shuffle(self._idx)
         return self
 
     def __next__(self):
