@@ -31,7 +31,7 @@ from . import algorithms, ansatz, data, differentiator, encoder, layer, models, 
 from .loss import BCELoss, CrossEntropy, HingeLoss, LossFun, MSELoss, SoftmaxCrossEntropy
 from .optimizer import AdaGrad, Adam, OptimizerBase, OptimizerInitializer, RMSProp, SGD
 
-__version__ = "0.1.0-beta.1"
+__version__ = "0.1.0-beta.2"
 
 __all__ = [
     "algorithms",
