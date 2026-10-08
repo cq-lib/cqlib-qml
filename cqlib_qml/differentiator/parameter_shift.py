@@ -150,6 +150,8 @@ class ParameterShiftDifferentiator:
             initial_state = np.asarray(initial_state, dtype=np.complex128)
             if initial_state.shape != (1 << circuit.num_qubits,):
                 raise ValueError("Initial state dimension does not match the circuit.")
+            if not np.all(np.isfinite(initial_state)):
+                raise ValueError("Initial state amplitudes must be finite.")
         bindings = {str(key): value for key, value in bindings.items()}
         circuit = circuit.decompose()
         if len(circuit.parameters) == 0:

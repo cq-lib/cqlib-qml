@@ -90,22 +90,26 @@ def train(
 
         expectations = net.forward(x_train)  # Shape: (batch_size, 1)
 
-        # For HingeLoss and MSELoss: labels are converted to {-1, 1}
-        y_true = (2 * y_train - 1.0).reshape(expectations.shape)
-        y_pred = -expectations
-        # For BCELoss: use labels in {0, 1}
-        # y_true = y_train.reshape(expectations.shape)
-        # y_pred = (1 - expectations) / 2.0
+        if isinstance(loss_fun, BCELoss):
+            y_true = y_train.reshape(expectations.shape)
+            y_pred = (1 - expectations) / 2.0
+            dpred = -0.5
+        else:
+            # HingeLoss and MSELoss use labels in {-1, 1}.
+            y_true = (2 * y_train - 1.0).reshape(expectations.shape)
+            y_pred = -expectations
+            dpred = -1.0
 
         loss = loss_fun(y_pred, y_true)
 
         # Optimize
-        net.backward(loss_fun.grads(-1))
+        net.backward(loss_fun.grads(dpred))
         net.update(cur_loss=loss)
         net.zero_grad()
 
         # Compute accuracy
-        correct = np.where(y_true * y_pred > 0)[0].shape[0]
+        signed_labels = (2 * y_train - 1.0).reshape(expectations.shape)
+        correct = np.where(signed_labels * -expectations > 0)[0].shape[0]
         accuracy = correct / len(y_train)
 
         loader.set_postfix(it=it, loss="{:.3f}".format(loss), accuracy="{:.3f}".format(accuracy))
@@ -149,16 +153,20 @@ def validate(ep: int, net: QNN, test_loader, loss_fun, batch_size: int, tb: Opti
     for it, (x_test, y_test) in enumerate(loader_val):
         expectations_val = net.forward(x_test, trainable=False)
 
-        # For HingeLoss and MSELoss
-        y_true_val = (2 * y_test - 1.0).reshape(expectations_val.shape)
-        y_pred_val = -expectations_val
+        if isinstance(loss_fun, BCELoss):
+            y_true_val = y_test.reshape(expectations_val.shape)
+            y_pred_val = (1 - expectations_val) / 2.0
+        else:
+            y_true_val = (2 * y_test - 1.0).reshape(expectations_val.shape)
+            y_pred_val = -expectations_val
 
         loss_val = loss_fun(y_pred_val, y_true_val)
         count = len(y_test)
         total_samples += count
         total_loss += loss_val if getattr(loss_fun, "reduction", "mean") == "sum" else loss_val * count
 
-        correct_val = np.where(y_true_val * y_pred_val > 0)[0].shape[0]
+        signed_labels = (2 * y_test - 1.0).reshape(expectations_val.shape)
+        correct_val = np.where(signed_labels * -expectations_val > 0)[0].shape[0]
         total_correct += correct_val
         accuracy_val = correct_val / len(y_test)
 
