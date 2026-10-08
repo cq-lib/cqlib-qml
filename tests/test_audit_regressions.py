@@ -78,8 +78,8 @@ def test_linear_backward_uses_forward_weights_and_activation():
     np.testing.assert_allclose(dx, derivative)
     np.testing.assert_allclose(layer.gradients['W'], 2 * derivative)
     layer.zero_grad()
-    with pytest.raises(ValueError, match='forward'):
-        layer.backward(np.ones((2, 1)))
+    np.testing.assert_allclose(layer.backward(np.ones((2, 1))), derivative)
+    np.testing.assert_allclose(layer.gradients['W'], 2 * derivative)
 
 
 @pytest.mark.parametrize('loss_cls', [CrossEntropy, SoftmaxCrossEntropy])
@@ -175,11 +175,11 @@ def test_vqc_label_mapping_and_classifier_contract(labels, loss):
     # Run a valid fit with zero learning rate to keep the trained circuit fixed
     # while checking conventional labels. Zero epochs is no longer supported.
     from copy import deepcopy
-    reference = VQC(deepcopy(model.ansatz), model.encoder, loss=loss,
+    reference = VQC(deepcopy(model.ansatz_), model.encoder_, loss=loss,
                     readouts=model.readouts, optimizer='sgd(lr=0)', epochs=1, verbose=False)
     bindings = dict(reference.ansatz._bindings)
     reference.fit(X, np.array([0, 1, 0, 1]))
-    assert reference.ansatz._bindings == bindings
+    assert reference.ansatz_._bindings == bindings
     expected = model.classes_[reference.predict(X)]
     np.testing.assert_array_equal(model.predict(X), expected)
     np.testing.assert_allclose(model.predict_proba(X).sum(axis=1), 1)

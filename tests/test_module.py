@@ -58,7 +58,7 @@ class TestModule:
         module.forward(X)
         dLdout = np.array([[0.5]])
         grad = module.backward(dLdout)
-        assert grad.shape == (3,)
+        assert grad.shape == (1, 3)
 
     def test_zero_grad(self):
         layer1 = Linear(in_dim=3, out_dim=2)

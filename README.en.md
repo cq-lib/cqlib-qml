@@ -4,6 +4,8 @@ See the [Chinese version](README.md).
 
 Cqlib-QML is a quantum machine learning Python package based on **[Cqlib](https://github.com/cq-lib/cqlib)**. It provides quantum encoders for classical data, parameterized quantum circuits, quantum and hybrid quantum-classical neural networks, quantum kernel algorithms, and reusable model-training components.
 
+Quantum layers support explicit input/weight roles, end-to-end gradients and microbatch accumulation. VQC supports reproducible refits, weight-only warm starts and complete versioned checkpoint resume. See the [training contracts and migration guide](docs/tutorials/training_contracts.md) for shapes, state rules and resume boundaries.
+
 ## Installation
 
 Python 3.11 or later and cqlib 2.0.0b3 or later are required.

@@ -97,7 +97,8 @@ $$y = xW^T + b$$
         in_dim: int,
         out_dim: int,
         bias: bool = True,
-        act_fn: str = None
+        act_fn: str = None,
+        *, random_state=None
     )
 
 | 参数 | 类型 | 描述 |
@@ -105,6 +106,7 @@ $$y = xW^T + b$$
 | `in_dim` | int | 输入维度 |
 | `out_dim` | int | 输出维度 |
 | `bias` | bool | 是否使用偏置 |
+| `random_state` | int/Generator/None | 控制自身参数初始化的随机流 |
 | `act_fn` | str | 激活函数名称：`"sigmoid"`, `"relu"`, `"tanh"`, `"softplus"`, `None` |
 
 ### 参数初始化
@@ -422,3 +424,7 @@ $$W \sim \mathcal{U}(-1/\sqrt{d_{\text{in}}}, 1/\sqrt{d_{\text{in}}})$$
 | `ReLU` | `act(x)`, `grad(x)`, `grad2(x)` | 整流线性单元 |
 | `Tanh` | `act(x)`, `grad(x)`, `grad2(x)` | 双曲正切 |
 | `SoftPlus` | `act(x)`, `grad(x)`, `grad2(x)` | 平滑 ReLU |
+
+## 统一训练契约
+
+Linear 的 forward 和 backward 始终保留 batch 轴；单样本输入梯度为 `(1, in_dim)`。梯度跨前向、重复反向累加，zero_grad 只清参数梯度。`random_state` 控制自身初始化。与量子层组合、微批次缩放和冻结行为见 [训练契约](training_contracts.md)。

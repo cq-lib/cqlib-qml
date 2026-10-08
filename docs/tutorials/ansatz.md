@@ -69,7 +69,7 @@ ansatz/
 
 ```python
 class Ansatz:
-    def __init__(self, qubits: int | list[int] | list[Qubit]):
+    def __init__(self, qubits: int | list[int] | list[Qubit], *, random_state=None):
         self._circuit = Circuit(qubits)      # 底层量子电路
         self._bindings = None                # 参数绑定字典
         self._gradients = {}                 # 参数梯度
@@ -599,7 +599,7 @@ print(len(ansatz))  # 应大于 0
 | 方法 | 返回类型 | 描述 |
 |------|----------|------|
 | `forward(X=None, quantum_state=None)` | np.ndarray | 前向传播，返回测量期望值 |
-| `backward(dLdexp=None)` | dict 或 np.ndarray | 反向传播，返回参数梯度 |
+| `backward(dLdexp=None)` | np.ndarray | 返回 `(batch, inputs)` 输入梯度；累计权重梯度从 `gradients/weight_gradients` 读取 |
 | `set_measurement(**kwargs)` | None | 设置测量方式；只传 `readouts` 或 `hams` 其中一个 |
 | `set_optimizer(optimizer)` | None | 设置参数优化器 |
 | `set_differentiator(differentiator="adjoint", shift=np.pi/2)` | None | 设置梯度计算器 |
@@ -636,3 +636,7 @@ print(len(ansatz))  # 应大于 0
 |------|------|------|
 | `n_qubits` | int | 量子比特数（≥ 3） |
 | `layers` | int | 层数 |
+
+## 统一训练契约
+
+`set_parameter_roles(input_params=..., weight_params=...)` 为同一线路声明输入和权重，`assign_weights` 绑定共享权重。`backward(dY)` 返回二维输入梯度并累加权重梯度，Jacobian 用独立属性读取。zero_grad 保留前向缓存；冻结权重后仍计算输入梯度。完整形状与迁移规则见 [训练契约](training_contracts.md)。

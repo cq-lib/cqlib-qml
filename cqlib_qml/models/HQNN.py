@@ -71,6 +71,7 @@ class HQNN(Module):
             Defaults to None.
         optimizer (Union[str, dict, OptimizerBase], optional): The optimizer
             for training. Defaults to "adam".
+        random_state (int/Generator/None): Independent initialization RNG.
 
     Attributes:
         _ansatz (HEAnsatz): The quantum circuit ansatz.
@@ -92,7 +93,7 @@ class HQNN(Module):
         ... )
         >>>
         >>> # With initial parameters
-        >>> params = np.random.randn(len(ansatz.symbols))
+        >>> params = np.random.randn(ansatz.num_weights)
         >>> hqnn = HQNN(ansatz=ansatz, out_dim=3, params=params)
     """
 
@@ -104,6 +105,7 @@ class HQNN(Module):
         optimizer: Union[str, dict, OptimizerBase] = "adam",
         *,
         readouts: list = None,
+        random_state=None,
     ):
         """
         Initialize an HQNN model.
@@ -114,6 +116,7 @@ class HQNN(Module):
             readouts (list, optional): Readout qubits. Defaults to None.
             params (np.ndarray, optional): Initial parameters. Defaults to None.
             optimizer (Union[str, dict, OptimizerBase]): Optimizer. Defaults to "adam".
+            random_state (int/Generator/None): Independent initialization RNG.
 
         Raises:
             TypeError: If ansatz is not an HEAnsatz.
@@ -124,13 +127,13 @@ class HQNN(Module):
         n_qubits = self._ansatz.num_qubits
         if params is not None:
             params = validate_initial_params(ansatz, params)
-            bindings = dict(zip(ansatz.symbols, params))
-            self._ansatz.assign_parameters(bindings)
+            bindings = dict(zip(ansatz.weight_params, params))
+            self._ansatz.assign_weights(bindings)
         if readouts is None:
             readouts = self._ansatz.readouts if self._ansatz.readouts is not None else list(range(n_qubits))
         self._ansatz.set_measurement(readouts=readouts)
         self._linear = Linear(len(readouts), out_dim)
-        super(HQNN, self).__init__(self._ansatz, self._linear)
+        super(HQNN, self).__init__(self._ansatz, self._linear, random_state=random_state)
         self.set_optimizer(optimizer)
 
     def forward(self, data_circuits: Union[Circuit, List[Circuit]], trainable: bool = True):
@@ -144,11 +147,11 @@ class HQNN(Module):
         Args:
             data_circuits (Union[Circuit, List[Circuit]]): Data circuits
                 after encoding. Can be a single Circuit or a list.
-            trainable (bool, optional): Whether to enable training mode.
+            trainable (bool, optional): Whether to record backward caches.
                 If True, retains training state while respecting freeze().
-                If False, clears old gradients and backward caches before
-                validating inputs, even if the call fails. Freeze status is
-                unchanged. Defaults to True.
+                If False, discards backward caches before
+                validating inputs, even if the call fails. Accumulated gradients
+                are preserved. Freeze status is unchanged. Defaults to True.
 
         Returns:
             np.ndarray: Output from the classical linear layer.

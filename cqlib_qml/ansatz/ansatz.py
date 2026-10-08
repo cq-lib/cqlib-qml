@@ -61,7 +61,7 @@ class Ansatz:
         - State saving and loading
 
     Attributes:
-        in_dim (int): Number of input dimensions (trainable parameters).
+        in_dim (int): Input columns in explicit role mode; circuit symbols in legacy mode.
         out_dim (int): Number of output dimensions (measurements).
         gradients (dict): Gradients of trainable parameters.
         readouts (list): Readout qubits for measurement.
@@ -94,8 +94,8 @@ class Ansatz:
 
     @property
     def in_dim(self) -> int:
-        """Number of input dimensions (trainable parameters)."""
-        return len(self.symbols)
+        """Input columns, or legacy circuit symbol count before role declaration."""
+        return len(self.input_params) if self._roles is not None else len(self.symbols)
 
     @property
     def out_dim(self) -> int:
@@ -130,7 +130,16 @@ class Ansatz:
     @property
     def summary(self) -> dict:
         """Dictionary containing the ansatz information."""
-        return {
+        from cqlib_qml._state import FORMAT_VERSION
+        return copy.deepcopy({
+            "format_version": FORMAT_VERSION,
+            "parameter_roles": copy.deepcopy(self._roles),
+            "weights": copy.deepcopy(self._weights),
+            "trainable": self._trainable,
+            "training": self.training,
+            "rng_state": copy.deepcopy(self._rng.bit_generator.state),
+            "differentiator": {"method": "parameter_shift", "shift": self._differentiator._shift}
+                if isinstance(self._differentiator, ParameterShiftDifferentiator) else {"method": "adjoint"},
             "ansatz": f"{self.__class__.__name__}",
             "in_dim": self.in_dim,
             "out_dim": self.out_dim,
@@ -146,7 +155,7 @@ class Ansatz:
                 if self._optimizer
                 else None
             ),
-        }
+        })
 
     @property
     def num_qubits(self) -> int:
@@ -178,17 +187,26 @@ class Ansatz:
         """Iterator over all operations in the circuit."""
         return self._circuit.operations
 
-    def __init__(self, qubits: int | list[int] | list[Qubit]) -> None:
+    def __init__(self, qubits: int | list[int] | list[Qubit], *, random_state=None) -> None:
         """
         Initialize an Ansatz instance.
 
         Args:
             qubits: Number of qubits or list of qubit indices/objects.
+            random_state (int/Generator/None): Independent random stream.
 
         Note:
             This initializes an empty circuit. Subclasses should call this
             and then add gates using the circuit construction methods.
         """
+        from cqlib_qml._state import make_rng
+        self._rng = make_rng(random_state)
+        self.training = True
+        self._roles = None
+        self._weights = {}
+        self._active_inputs = []
+        self._active_weights = []
+        self._batch_size = 0
         self._circuit = Circuit(qubits)
         self._assigned_cir = None
         self._bindings = None
@@ -274,7 +292,18 @@ class Ansatz:
             >>> ansatz.assign_parameters({"theta": 0.5, "phi": 0.3})
         """
         normalized = {str(key): value for key, value in bindings.items()}
+        names = self.weight_params
+        if self._roles is not None:
+            self.assign_weights(normalized)
+            return
+        if set(normalized) != set(self.symbols):
+            raise ValueError("All circuit parameter bindings are required")
+        vector = np.asarray([normalized[name] for name in names])
+        if np.iscomplexobj(vector) or not np.all(np.isfinite(vector)):
+            raise ValueError("Parameter bindings must be finite real numbers")
         assigned = self._circuit.assign_parameters(normalized)
+        self._weights = dict(normalized)
+        self._invalidate_gradients()
         self._bindings = normalized
         self._assigned_cir = assigned
 
@@ -284,68 +313,152 @@ class Ansatz:
             return True
         return False
 
-    def _get_fwd_circuits(self, X: Optional[np.ndarray] = None) -> tuple:
-        """
-        Generate forward circuits with parameter bindings.
+    @property
+    def input_params(self):
+        """Input symbol names in declared column order (empty in legacy mode)."""
+        return list(self._roles[0]) if self._roles is not None else []
 
-        Args:
-            X: Input data for parameter binding. If None, uses random
-                initialization or existing bindings.
+    @property
+    def weight_params(self):
+        """Persistent weight symbol names in declared order."""
+        return list(self._roles[1]) if self._roles is not None else list(self.symbols)
 
-        Returns:
-            tuple: (circuits, bindings_list) where circuits is a list of
-                Circuit objects and bindings_list is a list of bindings.
+    @property
+    def num_inputs(self):
+        return len(self.input_params)
+
+    @property
+    def num_weights(self):
+        return len(self.weight_params)
+
+    @property
+    def weights(self):
+        return np.array([self._weights[name] for name in self.weight_params], dtype=float)
+
+    @property
+    def weight_gradients(self):
+        return np.array([self._gradients.get(name, 0.0) for name in self.weight_params])
+
+    @property
+    def input_jacobian(self):
+        return self._role_jacobian(self._active_inputs)
+
+    @property
+    def weight_jacobian(self):
+        return self._role_jacobian(self._active_weights)
+
+    @property
+    def jacobian(self):
+        """Copies of the last forward Jacobians, indexed by symbol name."""
+        return {key: value.copy() for key, value in self._jacobian.items()}
+
+    def _role_jacobian(self, names):
+        if not self._forward_valid:
+            raise ValueError("Run a recorded forward before querying the Jacobian")
+        return (np.stack([self._jacobian[name] for name in names], axis=-1)
+                if names else np.empty((self._batch_size, self.out_dim, 0)))
+
+    def set_parameter_roles(self, *, input_params, weight_params):
+        """Declare a complete, disjoint partition of circuit symbols.
+
+        Lists accept names or single-symbol Parameters; list order is the
+        input/weight vector order. Declare roles after constructing the circuit.
         """
-        circuits = []
-        # Parameters need to be updated
-        if X is None:
-            self._updatable = True
-            # Preserve existing bindings when the circuit has been extended.
-            if not self._assigned_value():
-                keys = self.symbols
-                previous = self._bindings or {}
-                self._bindings = {key: previous[key] if key in previous else np.random.randn()
-                                  for key in keys}
-                self._assigned_cir = self._circuit.assign_parameters(self._bindings)
-            # encoder + ansatz
-            if self._encoder is not None:
-                for enc_cir in self._encoder:
-                    enc_cir_gate = enc_cir.to_gate("enc_cir")
-                    enc_cir_copy = Circuit(enc_cir.num_qubits)
-                    enc_cir_copy.append_circuit_gate(enc_cir_gate, list(range(enc_cir.num_qubits)))
-                    enc_cir_copy.compose(self._assigned_cir)
-                    circuits.append(enc_cir_copy)
-            else:
-                circuits = [self._assigned_cir]
-            bindings_list = [self._bindings]
-        # Parameters depend on the previous layer
+        roles = []
+        for values in (input_params, weight_params):
+            names = []
+            for value in values:
+                if not isinstance(value, (str, Parameter)):
+                    raise TypeError("Parameter roles require names or Parameters")
+                name = str(value)
+                if name not in self.symbols:
+                    raise ValueError(f"Unknown parameter: {name}")
+                names.append(name)
+            if len(set(names)) != len(names):
+                raise ValueError("Duplicate parameter role")
+            roles.append(names)
+        if set(roles[0]) & set(roles[1]):
+            raise ValueError("Input and weight parameter roles conflict")
+        if set(roles[0] + roles[1]) != set(self.symbols):
+            raise ValueError("Parameter roles must cover every circuit symbol")
+        previous = {**(self._bindings or {}), **self._weights}
+        self._roles = roles
+        self._weights = {name: previous[name] for name in roles[1] if name in previous}
+        self._updatable = bool(roles[1])
+        self.zero_grad()
+        self._invalidate_gradients()
+
+    def assign_weights(self, values):
+        """Bind a complete real weight vector or symbol mapping."""
+        names = self.weight_params
+        if isinstance(values, dict):
+            values = {str(key): value for key, value in values.items()}
+            if set(values) != set(names):
+                raise ValueError("Weight bindings must match all weight parameters")
+            vector = np.asarray([values[name] for name in names])
         else:
-            bindings_list = []
-            self._updatable = False
+            vector = np.asarray(values)
+        if vector.shape != (len(names),) or np.iscomplexobj(vector):
+            raise ValueError("Weights must be a real vector matching weight parameters")
+        vector = vector.astype(float)
+        if not np.all(np.isfinite(vector)):
+            raise ValueError("Weights must be finite")
+        self._weights = dict(zip(names, vector))
+        if self._roles is None or not self.input_params:
+            self._bindings = dict(self._weights)
+            self._assigned_cir = self._circuit.assign_parameters(self._bindings)
+        self._invalidate_gradients()
+
+    def train(self, mode=True):
+        self.training = bool(mode)
+        return self
+
+    def eval(self):
+        return self.train(False)
+
+    def _get_fwd_circuits(self, X=None):
+        if self._roles is not None:
+            if set(self.input_params + self.weight_params) != set(self.symbols):
+                raise ValueError("Circuit symbols changed; redeclare parameter roles")
+            inputs, weights = self.input_params, self.weight_params
+            if inputs and X is None:
+                raise ValueError("Input parameters require X")
+        else:
+            inputs, weights = (list(self.symbols), []) if X is not None else ([], list(self.symbols))
+        self._active_inputs, self._active_weights = inputs, weights
+        self._updatable = bool(weights)
+        if X is not None:
+            X = np.asarray(X)
             if X.ndim == 1:
                 X = X.reshape(1, -1)
-            if X.shape[1] != self.in_dim:
-                raise ValueError(f"Input dimension {X.shape[1]} does not match expected {self.in_dim}.")
-            # X + encoder + ansatz
+            if X.ndim != 2 or X.shape[1] != len(inputs) or not len(X):
+                raise ValueError(f"Input dimension must be (batch, {len(inputs)})")
+            if np.iscomplexobj(X) or not np.all(np.isfinite(X)):
+                raise ValueError("Inputs must be finite real numbers")
+            rows = X
+        else:
+            rows = np.empty((len(self._encoder) if self._encoder is not None else 1, 0))
+        for name in weights:
+            if name not in self._weights:
+                self._weights[name] = self._rng.normal()
+        if self._encoder is not None and len(self._encoder) != len(rows):
+            raise ValueError("Batch size does not match encoding circuits")
+        circuits, bindings_list = [], []
+        for index, row in enumerate(rows):
+            bindings = {name: self._weights[name] for name in weights}
+            bindings.update(zip(inputs, row))
+            assigned = self._circuit.assign_parameters(bindings)
             if self._encoder is not None:
-                if len(self._encoder) != X.shape[0]:
-                    raise ValueError(f"Batch size {X.shape[0]} does not match encoding circuits {len(self._encoder)}.")
-                for x, enc_cir in zip(X, self._encoder):
-                    bindings = dict(zip(self.symbols, x))
-                    assigned_cir = self._circuit.assign_parameters(bindings)
-                    enc_cir_gate = enc_cir.to_gate("enc_cir")
-                    enc_cir_copy = Circuit(enc_cir.num_qubits)
-                    enc_cir_copy.append_circuit_gate(enc_cir_gate, list(range(enc_cir.num_qubits)))
-                    enc_cir_copy.compose(assigned_cir)
-                    circuits.append(enc_cir_copy)
-                    bindings_list.append(bindings)
-            # X + ansatz
-            else:
-                for x in X:
-                    bindings = dict(zip(self.symbols, x))
-                    assigned_cir = self._circuit.assign_parameters(bindings)
-                    circuits.append(assigned_cir)
-                    bindings_list.append(bindings)
+                encoder = self._encoder[index]
+                full = Circuit(encoder.num_qubits)
+                full.append_circuit_gate(encoder.to_gate("enc_cir"), list(range(encoder.num_qubits)))
+                full.compose(assigned)
+                assigned = full
+            circuits.append(assigned)
+            bindings_list.append(bindings)
+        if not inputs:
+            self._bindings = dict(bindings_list[0])
+            self._assigned_cir = self._circuit.assign_parameters(self._bindings)
         return circuits, bindings_list
 
     def _fwd(
@@ -362,7 +475,6 @@ class Ansatz:
         Returns:
             np.ndarray: Expectation values.
         """
-        self._gradients = {}
         self._jacobian = {}
         n_circuits = len(circuits)
         n_states = quantum_state.shape[0] if quantum_state is not None else 0
@@ -381,7 +493,7 @@ class Ansatz:
             else:
                 exps, sv = self._get_expectations(cir, self._hams, state_vector)
             expectations.append(exps)
-            if self._retain_derived and self.symbols and (self._trainable or not self._updatable):
+            if self._retain_derived and self.symbols:
                 binding = bindings_list[i] if len(bindings_list) == n else bindings_list[0]
                 initial = state_vector
                 if isinstance(self._differentiator, ParameterShiftDifferentiator) and self._encoder is not None:
@@ -394,7 +506,7 @@ class Ansatz:
 
         if not expectations:
             raise ValueError("Circuit batch must not be empty.")
-        self._jacobian = {key: value.copy() for key, value in self._gradients.items()}
+        self._batch_size = n
         return np.array(expectations)
 
     def forward(
@@ -409,14 +521,16 @@ class Ansatz:
 
         Args:
             X (np.ndarray, optional): Input data for parameter binding.
-                If None, uses random initialization. Defaults to None.
+                Declared input columns; legacy mode binds all circuit symbols.
+                None uses persistent weights and is valid only without input roles.
             quantum_state (np.ndarray, optional): Initial quantum state vector.
                 Defaults to None (|0⟩ state).
             retain_derived (bool): Retain the forward Jacobian for backward.
-                False clears prior training state without changing freeze status.
+                False discards the last forward cache, preserving cumulative
+                gradients and freeze status.
 
         Returns:
-            Union[float, np.ndarray]: Expectation values of the measurements.
+            np.ndarray: Expectations with shape (batch, out_dim), including batch=1.
 
         Raises:
             ValueError: If circuit is not initialized or input dimensions mismatch.
@@ -433,7 +547,6 @@ class Ansatz:
             >>> result = ansatz.forward()
         """
         self._forward_valid = False
-        self._gradient_valid = False
         self._retain_derived = retain_derived
         if not retain_derived:
             self._invalidate_gradients()
@@ -465,86 +578,35 @@ class Ansatz:
         else:
             grads = self._differentiator.run(self._circuit, bindings, self._readouts, self._hams,
                                              initial_state=initial_state)
-        if len(self._gradients) == 0:
-            self._gradients = grads.copy()
-        else:
-            for key in grads.keys():
-                self._gradients[key] = np.vstack((self._gradients[key], grads[key]))
+        for key, value in grads.items():
+            value = np.asarray(value).reshape(1, -1)
+            self._jacobian[key] = (np.vstack((self._jacobian[key], value))
+                                   if key in self._jacobian else value.copy())
 
-    def backward(self, dLdexp: Optional[Union[float, np.ndarray]] = None) -> Union[dict, np.ndarray]:
-        """
-        Perform backward propagation for one step.
+    def backward(self, dLdexp=None, retain_grad=True):
+        """Return (batch, inputs) gradients and accumulate shared weight VJPs.
 
-        This method computes the gradients of the loss with respect to the
-        trainable parameters or inputs. Repeated calls reuse the forward
-        Jacobian and replace the previous loss gradients; they do not accumulate.
-        zero_grad clears both the Jacobian and loss gradients.
-
-        Args:
-            dLdexp (Union[float, np.ndarray], optional): Gradients of the loss
-                with respect to the expectation values. If None, returns the
-                computed gradients. Defaults to None.
-
-        Returns:
-            Union[dict, np.ndarray]:
-                - If dLdexp is None: Returns the gradients dictionary.
-                - If dLdexp is provided: Returns the gradients of inputs.
-
-        Raises:
-            ValueError: If the ansatz is frozen or dimensions mismatch.
-
-        Examples:
-            >>> # Forward pass
-            >>> expectations = ansatz.forward(data_circuits)
-            >>>
-            >>> # Compute loss
-            >>> loss = loss_fun(expectations, labels)
-            >>>
-            >>> # Backward pass
-            >>> ansatz.backward(loss_fun.grads())
+        None differentiates the sum of outputs. Loss scaling is supplied by
+        the caller; this method never averages across the batch.
         """
         if not self._forward_valid:
-            raise ValueError("No gradients available; run forward in training mode before backward")
-        if not self._trainable and self._updatable:
-            raise ValueError("Ansatz is frozen.")
+            raise ValueError("No gradients available; run a recorded forward before backward")
         if dLdexp is None:
-            return self._gradients
-        if not self.symbols:
-            return {} if self._updatable else np.empty((np.shape(dLdexp)[0], 0))
-        else:
-            if isinstance(dLdexp, numbers.Number):
-                dLdexp = np.array([dLdexp])
-            if not isinstance(dLdexp, np.ndarray):
-                raise TypeError(f"Expected np.ndarray, got {type(dLdexp).__name__}")
-            if dLdexp.ndim == 1:
-                dLdexp = dLdexp.reshape(1, -1)
-            if dLdexp.shape[1] != self._out_dim:
-                raise ValueError(
-                    f"Gradient dimension {dLdexp.shape[1]} does not match output dimension {self._out_dim}."
-                )
-            if not self._jacobian:
-                raise ValueError("No gradients available; run forward after zero_grad before backward.")
-            first_gradient = next(iter(self._jacobian.values()))
-            expected_batch_size = 1 if first_gradient.ndim == 1 else first_gradient.shape[0]
-            if dLdexp.shape[0] != expected_batch_size:
-                raise ValueError(
-                    f"Gradient batch size {dLdexp.shape[0]} does not match encoding batch {expected_batch_size}."
-                )
-
+            dLdexp = np.ones((self._batch_size, self.out_dim))
+        dLdexp = np.asarray(dLdexp)
+        if dLdexp.ndim == 0:
+            dLdexp = dLdexp.reshape(1, 1)
+        elif dLdexp.ndim == 1:
+            dLdexp = dLdexp.reshape(1, -1)
+        if dLdexp.shape != (self._batch_size, self.out_dim):
+            raise ValueError("Gradient batch size or output dimension mismatch")
+        dx = np.einsum("bo,boi->bi", dLdexp, self.input_jacobian)
+        if self._trainable and retain_grad and self._active_weights:
+            dw = np.einsum("bo,bow->w", dLdexp, self.weight_jacobian)
+            for name, value in zip(self._active_weights, dw):
+                self._gradients[name] = self._gradients.get(name, 0.0) + value
             self._gradient_valid = True
-            for key, val in self._jacobian.items():
-                if val.ndim == 1:
-                    val = val.reshape(1, -1)
-                if val.shape != dLdexp.shape:
-                    raise ValueError(f"Gradient shape {val.shape} does not match dLdexp shape {dLdexp.shape}.")
-                if self._updatable:
-                    self._gradients[key] = sum(sum(val * dLdexp))
-                else:
-                    self._gradients[key] = np.sum(val * dLdexp, axis=1)
-            if self._updatable:
-                return self._gradients
-            else:
-                return np.column_stack(list(self._gradients.values()))
+        return dx
 
     def set_differentiator(self, differentiator: str = "adjoint", shift: float = np.pi / 2) -> None:
         """
@@ -586,7 +648,7 @@ class Ansatz:
                 Defaults to "adam".
 
         Raises:
-            ValueError: If the ansatz is frozen.
+            ValueError: If optimizer configuration is invalid.
             TypeError: If optimizer type is unsupported.
 
         Examples:
@@ -594,8 +656,6 @@ class Ansatz:
             >>> ansatz.set_optimizer("sgd(lr=0.01)")
             >>> ansatz.set_optimizer(Adam(lr=0.001))
         """
-        if not self._updatable:
-            raise ValueError("The ansatz update is frozen.")
         self._optimizer = OptimizerInitializer(optimizer)()
         # Each component owns its state; stable parameter keys must not collide
         # when the same optimizer configuration is supplied to several layers.
@@ -639,55 +699,37 @@ class Ansatz:
             self._readouts = None
         else:
             raise ValueError(f"Expected 'readouts' or 'hams', got {kwargs_key}.")
+        self._invalidate_gradients()
 
     def freeze(self) -> None:
         """Freeze the parameters in the ansatz (disable training)."""
         self._trainable = False
+        self.zero_grad()
 
     def unfreeze(self) -> None:
         """Unfreeze the parameters in the ansatz (enable training)."""
         self._trainable = True
 
-    def zero_grad(self) -> None:
-        """Reset the gradients of parameters to zero."""
-        if not self._trainable:
-            raise ValueError("Ansatz is frozen.")
-        self._invalidate_gradients()
+    def zero_grad(self):
+        """Clear accumulated weight gradients without discarding forward caches."""
+        self._gradients = {}
+        self._gradient_valid = False
 
     def _invalidate_gradients(self):
-        """Discard training state without changing persistent freeze status."""
+        """Discard only transient forward state, preserving accumulated gradients."""
         self._forward_valid = False
-        self._gradient_valid = False
-        self._gradients = {}
         self._jacobian = {}
 
-    def update(self, cur_loss: Optional[float] = None) -> None:
-        """
-        Update the trainable parameters according to gradients.
-
-        Args:
-            cur_loss (float, optional): Current loss value for learning rate
-                scheduling. Defaults to None.
-
-        Raises:
-            ValueError: If the ansatz is frozen.
-
-        Examples:
-            >>> ansatz.forward()
-            >>> ansatz.backward(loss_grads)
-            >>> ansatz.update()
-        """
-        if not (self._trainable and self._updatable):
-            raise ValueError("Ansatz is frozen.")
-        if not self._gradient_valid:
+    def update(self, cur_loss=None):
+        if not self._trainable or not self._gradient_valid or not self._gradients:
             return
+        if self._optimizer is None:
+            self.set_optimizer()
         self._optimizer.step()
-        new_params = dict(self._bindings)
-        for k, v in self._gradients.items():
-            if k in self.symbols:
-                unique_key = k
-                new_params[k] = self._optimizer(self._bindings[k], v, unique_key, cur_loss)
-        self.assign_parameters(new_params)
+        updated = dict(self._weights)
+        for name, gradient in self._gradients.items():
+            updated[name] = self._optimizer(self._weights[name], gradient, name, cur_loss)
+        self.assign_weights(updated)
 
     def _get_pauliZ_expectations(self, circuit: Circuit, readouts: list, state_vector: np.ndarray) -> tuple:
         """Compute Pauli-Z expectations for given readouts."""
@@ -710,6 +752,14 @@ class Ansatz:
         return np.array(expectations), state.data
 
     def load_params(self, summary_dict: dict) -> None:
+        from cqlib_qml._state import clone_state, validate_version
+        validate_version(summary_dict)
+        candidate = clone_state(self)
+        candidate._load_params_in_place(clone_state(summary_dict))
+        self.__dict__.clear()
+        self.__dict__.update(candidate.__dict__)
+
+    def _load_params_in_place(self, summary_dict: dict) -> None:
         """
         Load parameters from a summary dictionary.
 
@@ -719,10 +769,19 @@ class Ansatz:
         Raises:
             ValueError: If dimensions don't match.
         """
-        if not (self.in_dim == 0 or summary_dict["in_dim"] == self.in_dim):
+        if not (self.in_dim == 0 or summary_dict["in_dim"] == self.in_dim or summary_dict.get("parameter_roles") is not None):
             raise ValueError("The input dimensions to be loaded do not match.")
         if not (self._out_dim == 0 or summary_dict["out_dim"] == self._out_dim):
             raise ValueError("The output dimensions to be loaded do not match.")
+        from cqlib_qml._state import validate_flags
+        validate_flags(summary_dict)
+        for field in ('weights', 'parameter_roles', 'differentiator'):
+            if field not in summary_dict:
+                raise ValueError(f"Missing checkpoint field: {field}")
+        self._roles = None
+        self._bindings = None
+        self._assigned_cir = None
+        self._invalidate_gradients()
         if len(self) == 0:
             self._load_circuit(summary_dict["circuit"])
         else:
@@ -760,12 +819,36 @@ class Ansatz:
             self.set_measurement(readouts=readouts)
         elif hams is not None:
             self.set_measurement(hams=hams)
+        elif summary_dict["out_dim"] == 0:
+            self._readouts = self._hams = None
+            self._out_dim = 0
         else:
             raise ValueError("No measurement provided.")
 
         optim = summary_dict["optimizer"]
+        self._optimizer = None
         if optim is not None:
             self.set_optimizer(optim)
+        roles = summary_dict["parameter_roles"]
+        if roles is not None:
+            self.set_parameter_roles(input_params=roles[0], weight_params=roles[1])
+        self._weights = copy.deepcopy(summary_dict["weights"])
+        if set(self._weights) - set(self.weight_params):
+            raise ValueError("Checkpoint weight symbols mismatch")
+        if self._weights:
+            if set(self._weights) != set(self.weight_params):
+                raise ValueError("Checkpoint weight bindings incomplete")
+            self.assign_weights(self._weights)
+        diff = summary_dict["differentiator"]
+        self.set_differentiator(diff["method"], diff.get("shift", np.pi / 2))
+        self._trainable = summary_dict["trainable"]
+        self.training = summary_dict["training"]
+        from cqlib_qml._state import rng_from_state
+        self._rng = rng_from_state(summary_dict["rng_state"])
+        from cqlib_qml._state import validate_optimizer
+        validate_optimizer(self._optimizer, self._weights)
+        self._encoder = None
+        self.zero_grad()
         self._invalidate_gradients()
 
     def _circuit_summary(self) -> dict:
@@ -810,7 +893,7 @@ class Ansatz:
             else:
                 raise ValueError(f"Unsupported checkpoint instruction: {instruction.name}")
             gates.append(gate_info)
-        return {"num_qubits": self.num_qubits, "parameters": self._bindings, "gates": gates}
+        return {"num_qubits": self.num_qubits, "parameters": (self._bindings if self._roles is None else None), "gates": gates}
 
     @staticmethod
     def _same_structure(left, right):
@@ -949,6 +1032,7 @@ class Ansatz:
             raise TypeError(f"Unsupported instruction type: {type(instruction).__name__}")
         self._circuit.append(operation)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def multi_control_gate(
         self,
@@ -964,102 +1048,122 @@ class Ansatz:
         """Append an Identity (I) gate."""
         self._circuit.i(qubit)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def h(self, qubit: int | Qubit) -> None:
         """Append a Hadamard (H) gate."""
         self._circuit.h(qubit)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def x(self, qubit: int | Qubit) -> None:
         """Append a Pauli-X (NOT) gate."""
         self._circuit.x(qubit)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def y(self, qubit: int | Qubit) -> None:
         """Append a Pauli-Y gate."""
         self._circuit.y(qubit)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def z(self, qubit: int | Qubit) -> None:
         """Append a Pauli-Z gate."""
         self._circuit.z(qubit)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def s(self, qubit: int | Qubit) -> None:
         """Append an S (Phase) gate."""
         self._circuit.s(qubit)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def sdg(self, qubit: int | Qubit) -> None:
         """Append an S-dagger (S†) gate."""
         self._circuit.sdg(qubit)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def t(self, qubit: int | Qubit) -> None:
         """Append a T gate."""
         self._circuit.t(qubit)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def tdg(self, qubit: int | Qubit) -> None:
         """Append a T-dagger (T†) gate."""
         self._circuit.tdg(qubit)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def x2p(self, qubit: int | Qubit) -> None:
         """Append a √X (SX) gate."""
         self._circuit.x2p(qubit)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def x2m(self, qubit: int | Qubit) -> None:
         """Append a √X† (SXdg) gate."""
         self._circuit.x2m(qubit)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def y2p(self, qubit: int | Qubit) -> None:
         """Append a √Y gate."""
         self._circuit.y2p(qubit)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def y2m(self, qubit: int | Qubit) -> None:
         """Append a √Y† gate."""
         self._circuit.y2m(qubit)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     # Rotation gates
     def rx(self, qubit: int | Qubit, theta: float | Parameter) -> None:
         """Append a rotation around the X-axis by angle theta."""
         self._circuit.rx(qubit, theta)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def ry(self, qubit: int | Qubit, theta: float | Parameter) -> None:
         """Append a rotation around the Y-axis by angle theta."""
         self._circuit.ry(qubit, theta)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def rz(self, qubit: int | Qubit, theta: float | Parameter) -> None:
         """Append a rotation around the Z-axis by angle theta."""
         self._circuit.rz(qubit, theta)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def phase(self, qubit: int | Qubit, lambda_: float | Parameter) -> None:
         """Append a Phase gate (P gate)."""
         self._circuit.phase(qubit, lambda_)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def xy(self, qubit: int | Qubit, theta: float | Parameter) -> None:
         """Append an XY gate."""
         self._circuit.xy(qubit, theta)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def xy2p(self, qubit: int | Qubit, theta: float | Parameter) -> None:
         """Append a √XY gate (positive phase)."""
         self._circuit.xy2p(qubit, theta)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def xy2m(self, qubit: int | Qubit, theta: float | Parameter) -> None:
         """Append a √XY† gate (negative phase)."""
         self._circuit.xy2m(qubit, theta)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def u(
         self,
@@ -1071,52 +1175,62 @@ class Ansatz:
         """Append a generic single-qubit rotation U(theta, phi, lambda)."""
         self._circuit.u(qubit, theta, phi, lambda_)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def rxy(self, qubit: int | Qubit, theta: float | Parameter, phi: float | Parameter) -> None:
         """Append a rotation in the XY plane."""
         self._circuit.rxy(qubit, theta, phi)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     # Two-qubit gates
     def cx(self, control: int | Qubit, target: int | Qubit) -> None:
         """Append a Controlled-NOT (CNOT) gate."""
         self._circuit.cx(control, target)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def cy(self, control: int | Qubit, target: int | Qubit) -> None:
         """Append a Controlled-Y gate."""
         self._circuit.cy(control, target)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def cz(self, control: int | Qubit, target: int | Qubit) -> None:
         """Append a Controlled-Z gate."""
         self._circuit.cz(control, target)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def swap(self, a: int | Qubit, b: int | Qubit) -> None:
         """Append a SWAP gate."""
         self._circuit.swap(a, b)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def rxx(self, a: int | Qubit, b: int | Qubit, theta: float | Parameter) -> None:
         """Append an Ising XX coupling gate."""
         self._circuit.rxx(a, b, theta)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def ryy(self, a: int | Qubit, b: int | Qubit, theta: float | Parameter) -> None:
         """Append an Ising YY coupling gate."""
         self._circuit.ryy(a, b, theta)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def rzz(self, a: int | Qubit, b: int | Qubit, theta: float | Parameter) -> None:
         """Append an Ising ZZ coupling gate."""
         self._circuit.rzz(a, b, theta)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def rzx(self, a: int | Qubit, b: int | Qubit, theta: float | Parameter) -> None:
         """Append an Ising ZX coupling gate."""
         self._circuit.rzx(a, b, theta)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def fsim(
         self,
@@ -1128,28 +1242,33 @@ class Ansatz:
         """Append a Fermionic Simulation gate (fSim)."""
         self._circuit.fsim(a, b, theta, phi)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     # Controlled rotation gates
     def crx(self, control: int | Qubit, target: int | Qubit, theta: float | Parameter) -> None:
         """Append a Controlled-RX gate."""
         self._circuit.crx(control, target, theta)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def cry(self, control: int | Qubit, target: int | Qubit, theta: float | Parameter) -> None:
         """Append a Controlled-RY gate."""
         self._circuit.cry(control, target, theta)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def crz(self, control: int | Qubit, target: int | Qubit, theta: float | Parameter) -> None:
         """Append a Controlled-RZ gate."""
         self._circuit.crz(control, target, theta)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     # Multi-qubit gates
     def ccx(self, control1: int | Qubit, control2: int | Qubit, target: int | Qubit) -> None:
         """Append a Toffoli gate (CCX)."""
         self._circuit.ccx(control1, control2, target)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def multi_control(
         self,
@@ -1164,11 +1283,13 @@ class Ansatz:
             controls + targets,
         )
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def unitary(self, gate: UnitaryGate, qubits: list[int] | list[Qubit]) -> None:
         """Append a custom unitary gate to the circuit."""
         self._circuit.append_unitary_gate(gate, qubits)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def decompose(self) -> "Circuit":
         """Decompose the circuit into simpler operations."""
@@ -1190,6 +1311,7 @@ class Ansatz:
         """Add additional qubits to the circuit."""
         self._circuit.add_qubits(qubits)
         self._assigned_cir = None
+        self._invalidate_gradients()
 
     def add_parameter(self, param: Parameter) -> tuple[int, bool]:
         """Register a parameter name for legacy callers.

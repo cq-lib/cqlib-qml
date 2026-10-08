@@ -94,8 +94,8 @@ $$f(x; \boldsymbol{\theta}) = \langle 0 | U_{\text{enc}}(x)^\dagger U_{\text{ans
 | `freeze()` | 冻结所有组件 |
 | `unfreeze()` | 解冻所有组件 |
 | `random_init()` | 随机初始化 |
-| `save_checkpoint(model_path, ep, it, latest=False)` | 保存检查点 |
-| `load_checkpoint(model_path)` | 加载检查点 |
+| `save_checkpoint(model_path, ep, it, latest=False, *, data_loader=None)` | 保存检查点及可选数据顺序 |
+| `load_checkpoint(model_path, *, data_loader=None)` | 加载检查点及可选数据顺序 |
 
 ### 完整使用示例
 
@@ -156,7 +156,8 @@ $$f_{\text{QNN}}(x) = \langle 0 | U_{\text{enc}}(x)^\dagger U_{\text{ansatz}}(\b
         ansatz: Ansatz,
         readouts: list = None,
         params: np.ndarray = None,
-        optimizer: Union[str, dict, OptimizerBase] = "adam"
+        optimizer: Union[str, dict, OptimizerBase] = "adam",
+        *, random_state=None
     )
 
 | 参数 | 类型 | 描述 |
@@ -165,6 +166,7 @@ $$f_{\text{QNN}}(x) = \langle 0 | U_{\text{enc}}(x)^\dagger U_{\text{ansatz}}(\b
 | `readouts` | list | 测量量子比特索引 |
 | `params` | np.ndarray | 初始参数值 |
 | `optimizer` | str/dict/OptimizerBase | 优化器 |
+| `random_state` | int/Generator/None | 控制模型自身初始化的随机流 |
 
 ### 使用示例
 
@@ -229,15 +231,18 @@ HQNN 结合了量子计算的高维特征表示能力和经典计算的线性变
         ansatz: HEAnsatz,
         out_dim: int,
         params: np.ndarray = None,
-        optimizer: Union[str, dict, OptimizerBase] = "adam"
+        optimizer: Union[str, dict, OptimizerBase] = "adam",
+        *, readouts: list = None, random_state=None
     )
 
 | 参数 | 类型 | 描述 |
 |------|------|------|
 | `ansatz` | HEAnsatz | 参数化量子电路（必须是 HEAnsatz） |
 | `out_dim` | int | 输出维度 |
+| `readouts` | list/None | 测量量子比特索引（仅关键字） |
 | `params` | np.ndarray | 初始参数值 |
 | `optimizer` | str/dict/OptimizerBase | 优化器 |
+| `random_state` | int/Generator/None | 控制模型自身初始化的随机流 |
 
 ### 使用示例
 
@@ -395,8 +400,8 @@ HQNN 结合了量子计算的高维特征表示能力和经典计算的线性变
 | `freeze()` | 冻结 |
 | `unfreeze()` | 解冻 |
 | `random_init()` | 随机初始化 |
-| `save_checkpoint(model_path, ep, it, latest=False)` | 保存检查点 |
-| `load_checkpoint(model_path)` | 加载检查点 |
+| `save_checkpoint(model_path, ep, it, latest=False, *, data_loader=None)` | 保存检查点及可选数据顺序 |
+| `load_checkpoint(model_path, *, data_loader=None)` | 加载检查点及可选数据顺序 |
 
 ### QNN
 
@@ -406,6 +411,7 @@ HQNN 结合了量子计算的高维特征表示能力和经典计算的线性变
 | `readouts` | list | 测量量子比特 |
 | `params` | np.ndarray | 初始参数 |
 | `optimizer` | str/dict/OptimizerBase | 优化器 |
+| `random_state` | int/Generator/None | 控制模型自身初始化的随机流 |
 
 ### HQNN
 
@@ -415,14 +421,15 @@ HQNN 结合了量子计算的高维特征表示能力和经典计算的线性变
 | `out_dim` | int | 输出维度 |
 | `params` | np.ndarray | 初始参数 |
 | `optimizer` | str/dict/OptimizerBase | 优化器 |
+| `random_state` | int/Generator/None | 控制模型自身初始化的随机流 |
 ## 训练状态与恢复范围
 
-`freeze()` 持续生效，只有显式 `unfreeze()` 才解除冻结。QNN/HQNN 的 `forward(..., trainable=False)` 仅执行本次推理，不改变冻结状态，并清除量子和经典组件的旧梯度与反向缓存。推理后 `update()` 不更新参数或推进优化器；再次反向必须先执行训练前向。Module/Ansatz 可使用仅关键字参数 `retain_derived=False` 表达相同行为。冻结的中间层在训练前向中仍能传播输入梯度。
+量子层、Linear 和 Module 的 backward 统一累加权重梯度，输入梯度固定为 `(batch, inputs)`；单样本不压缩 batch 轴。`zero_grad()` 清空累计梯度并保留最近前向缓存，冻结组件也可清零。
 
-初始化 `params` 必须是一维有限实数向量，长度与 `ansatz.symbols` 完全一致。
+`freeze()` 持续禁止权重梯度和更新，但中间量子层继续计算输入梯度。`train()/eval()` 独立设置执行模式，不控制记录。QNN/HQNN 的历史入口 `trainable=False`，或 Module/Ansatz 的 `retain_derived=False`，使旧反向缓存失效，保留已累计梯度；推理后需要重新记录前向才能 backward。要丢弃累计梯度，请显式 zero_grad。
 
-调用 `forward(..., trainable=False)` 时，在输入校验前即清除旧训练状态，因此输入无效、调用抛异常时也需要重新执行训练前向与反向后才能更新。冻结状态保持不变。
+初始化 `params` 是匹配 `ansatz.weight_params` 的一维有限实数向量；未声明角色时仍对应全部线路符号。QNN/HQNN/Module 的 random_state 用于自身初始化，不依赖全局 seed。
 
-Checkpoint 恢复模型参数、线路结构、测量配置及已保存的优化器/调度器状态，返回 `(epoch, iteration + 1)`。它没有完整保存随机数状态、数据迭代顺序、微分器配置和冻结状态，因此不保证任意训练过程精确续跑。
+Checkpoint 初始格式版本为 `format_version=1`，保存冻结、角色、微分器、优化器、调度器和随机状态。有未清零梯度时不能保存。使用 `data_loader=loader` 可保存及恢复项目 DataLoader 的排列与下一批游标；外部数据管线需自行保存数据进度。loader 已完成 epoch 时返回 `(epoch+1, 0)`，否则保留 `(epoch, iteration+1)`。加载时拒绝缺少版本、版本不受支持或必要字段不完整的文件。
 
-加载 checkpoint 或调用 `load_params()` 会清除旧梯度、Jacobian 和反向缓存；恢复后直接调用 `update()` 不修改参数或推进优化器。
+加载会清空 Jacobian、梯度和反向缓存；恢复后直接 update 不推进优化器。详细混合网络、累积训练及恢复示例见 [训练契约](training_contracts.md)。

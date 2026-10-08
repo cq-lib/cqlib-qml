@@ -79,8 +79,11 @@ class Layer(ABC):
         """Dictionary containing the layer hyperparameters."""
         return None
 
-    def __init__(self):
+    def __init__(self, *, random_state=None):
         """Initialize a Layer instance."""
+        from cqlib_qml._state import make_rng
+        self._rng = make_rng(random_state)
+        self.training = True
         self._forward_valid = False
         self._gradient_valid = False
         self._tracks_gradient_validity = False
@@ -175,43 +178,32 @@ class Layer(ABC):
     def freeze(self) -> None:
         """Freeze the parameters in the layer (disable training)."""
         self._trainable = False
+        self.zero_grad()
 
     def unfreeze(self) -> None:
         """Unfreeze the parameters in the layer (enable training)."""
         self._trainable = True
 
-    def zero_grad(self) -> None:
-        """
-        Reset the gradients of parameters to zero.
+    def train(self, mode=True):
+        self.training = bool(mode)
+        return self
 
-        Raises:
-            ValueError: If the layer is frozen.
-        """
-        if not self._trainable:
-            raise ValueError("Layer is frozen.")
-        self._forward_valid = False
+    def eval(self):
+        return self.train(False)
+
+    def zero_grad(self):
+        """Clear accumulated parameter gradients, preserving the forward cache."""
         self._gradient_valid = False
-        self._inference_invalidated = False
-        self._X = []
-        for k, v in self._derived_variables.items():
-            self._derived_variables[k] = None
-
-        for k in self._gradients.keys():
-            if k in self._parameters and self._parameters[k] is not None:
-                self._gradients[k] = np.zeros_like(self._parameters[k])
-            else:
-                self._gradients[k] = np.zeros_like(self._gradients[k])
+        for key, value in self._parameters.items():
+            self._gradients[key] = np.zeros_like(value) if value is not None else None
 
     def _invalidate_gradients(self):
-        """Clear inference-invalid training state, including on frozen layers."""
+        """Discard forward caches independently of parameter gradients."""
         self._inference_invalidated = True
         self._forward_valid = False
-        self._gradient_valid = False
         self._X = []
         for key in self._derived_variables:
             self._derived_variables[key] = None
-        for key in self._gradients:
-            self._gradients[key] = np.zeros_like(self._gradients[key])
 
     def update(self, cur_loss: Optional[float] = None) -> None:
         """
@@ -221,8 +213,10 @@ class Layer(ABC):
             cur_loss (float, optional): Current loss value for learning rate
                 scheduling. Defaults to None.
 
-        Raises:
-            ValueError: If the layer is frozen.
+        Note:
+            Frozen layers and layers without pending gradients do not update or
+            advance the optimizer. Updating invalidates forward caches and
+            preserves accumulated gradients; call zero_grad to clear them.
 
         Examples:
             >>> layer.forward(X)
@@ -230,14 +224,20 @@ class Layer(ABC):
             >>> layer.update()
         """
         if not self._trainable:
-            raise ValueError("Layer is frozen.")
-        if self._inference_invalidated or (self._tracks_gradient_validity and not self._gradient_valid):
             return
+        if not self._gradient_valid:
+            # Historical custom layers own backward and do not set validity flags.
+            if self._tracks_gradient_validity or not any(value is not None and np.any(value)
+                                                       for value in self._gradients.values()):
+                return
+        if self._optimizer is None:
+            self.set_optimizer()
         self._optimizer.step()
         for k, v in self._gradients.items():
             if k in self._parameters:
                 unique_key = k
                 self._parameters[k] = self._optimizer(self._parameters[k], v, unique_key, cur_loss)
+        self._invalidate_gradients()
 
     def summary(self) -> dict:
         """
@@ -252,15 +252,29 @@ class Layer(ABC):
             >>> print(summary["layer"])
             Linear
         """
-        return {
+        from copy import deepcopy
+        from cqlib_qml._state import FORMAT_VERSION
+        return deepcopy({
+            "format_version": FORMAT_VERSION,
+            "trainable": self._trainable,
+            "training": self.training,
+            "rng_state": self._rng.bit_generator.state,
             "layer": self.hyperparameters["layer"],
             "parameters": self.parameters,
             "hyperparameters": {**self.hyperparameters, "optimizer": (
                 self._optimizer.state_dict() if self._optimizer is not None else None
             )},
-        }
+        })
 
     def load_params(self, summary_dict: dict) -> None:
+        from cqlib_qml._state import clone_state, validate_version
+        validate_version(summary_dict)
+        candidate = clone_state(self)
+        candidate._load_params_in_place(clone_state(summary_dict))
+        self.__dict__.clear()
+        self.__dict__.update(candidate.__dict__)
+
+    def _load_params_in_place(self, summary_dict: dict) -> None:
         """
         Load parameters from a summary dictionary.
 
@@ -274,6 +288,8 @@ class Layer(ABC):
         Examples:
             >>> layer.load_params(saved_summary)
         """
+        from cqlib_qml._state import validate_flags
+        validate_flags(summary_dict)
         if summary_dict["layer"] != self.hyperparameters["layer"]:
             raise ValueError("The layer to be loaded does not match.")
         if summary_dict["hyperparameters"]["in_dim"] != self._in_dim:
@@ -287,11 +303,19 @@ class Layer(ABC):
             self._gradients[key] = np.zeros_like(val)
         for key, val in summary_dict["hyperparameters"].items():
             if key == "optimizer":
+                self._optimizer = None
                 if val is not None:
                     self.set_optimizer(val)
             elif key == "act_fn":
                 if bool(val) ^ bool(self._act_fn):
                     warnings.warn("Activation function mismatch. Check your configuration.")
                 self._act_fn = ActivationInitializer(val)()
+        from cqlib_qml._state import validate_optimizer
+        validate_optimizer(self._optimizer, self._parameters)
         self._init = True
+        self._trainable = summary_dict["trainable"]
+        self.training = summary_dict["training"]
+        from cqlib_qml._state import rng_from_state
+        self._rng = rng_from_state(summary_dict["rng_state"])
+        self.zero_grad()
         self._invalidate_gradients()

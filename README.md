@@ -4,6 +4,8 @@
 
 本项目是基于 **[Cqlib](https://github.com/cq-lib/cqlib)** 的量子机器学习 Python 工具包，提供经典数据量子编码、参数化量子线路、纯量子与混合量子—经典神经网络、量子核方法及模型训练组件。
 
+量子层现在支持显式输入/权重角色、端到端梯度和微批次累积。VQC 支持可复现重训、warm start 及版本化 checkpoint 完整续训。API、恢复边界和行为迁移见 [训练契约教程](docs/tutorials/training_contracts.md)。
+
 ## 安装说明
 
 环境要求：Python 3.11 及以上版本，cqlib 2.0.0b3 及以上版本。

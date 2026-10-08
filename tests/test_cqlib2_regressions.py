@@ -195,8 +195,8 @@ def test_vqc_training_step_matches_loss_gradient(loss_name, readouts):
     before = value(bindings)
     vqc.fit(x, y)
     for symbol in bindings:
-        assert (bindings[symbol] - ansatz._bindings[symbol]) / 0.001 == pytest.approx(gradient[symbol], abs=1e-7)
-    assert value(ansatz._bindings) < before
+        assert (bindings[symbol] - vqc.ansatz_._bindings[symbol]) / 0.001 == pytest.approx(gradient[symbol], abs=1e-7)
+    assert value(vqc.ansatz_._bindings) < before
 
 
 def train_step(model, data):

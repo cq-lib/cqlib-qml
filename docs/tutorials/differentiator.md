@@ -482,17 +482,16 @@ print(f"速度比:       {time_ps / time_adjoint:.2f}x")
 import numpy as np
 from cqlib_qml.ansatz import HEAnsatz
 
-np.random.seed(0)
-
 # 创建线路
 ansatz = HEAnsatz(n_qubits=2, d=1, layers=["RY", "CX"])
 ansatz.set_measurement(readouts=[0])
+ansatz.assign_weights(np.random.default_rng(0).normal(size=ansatz.num_weights))
 
 # 使用伴随法
 ansatz.set_differentiator("adjoint")
 result = ansatz.forward()
 ansatz.backward()
-print(f"伴随法梯度: {ansatz.gradients}")
+print(f"伴随法梯度: {ansatz.weight_gradients.round(8)}")
 
 # 重置ansatz梯度
 ansatz.zero_grad()
@@ -501,15 +500,17 @@ ansatz.zero_grad()
 ansatz.set_differentiator("parameter_shift", shift=np.pi/2)
 result = ansatz.forward()
 ansatz.backward()
-print(f"参数偏移法梯度: {ansatz.gradients}")
+print(f"参数偏移法梯度: {ansatz.weight_gradients.round(8)}")
 ```
 
 **输出：**
 
 ```
-伴随法梯度: {'params0_0': array([-0.9813841]), 'params0_1': array([-1.38777878e-17])}
-参数偏移法梯度: {'params0_0': array([-0.9813841]), 'params0_1': array([5.55111512e-17])}
+伴随法梯度: [-0.12539922 -0.        ]
+参数偏移法梯度: [-0.12539922 -0.        ]
 ```
+
+梯度向量按 `ansatz.weight_params` 排列。显示时保留八位小数，接近零的分量可能显示为负零。
 
 ---
 

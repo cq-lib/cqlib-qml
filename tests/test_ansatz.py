@@ -237,18 +237,19 @@ class TestAnsatzBase:
         ansatz = BasicQNN(n_qubits=3, layers=["XX"])
         ansatz.set_measurement(readouts=[0])
         ansatz.forward()
+        ansatz.backward()
         assert len(ansatz.gradients) > 0
         ansatz.zero_grad()
         assert len(ansatz.gradients) == 0
 
-    def test_zero_grad_frozen_raises(self):
+    def test_zero_grad_frozen_allowed(self):
         ansatz = BasicQNN(n_qubits=3, layers=["XX"])
         ansatz.freeze()
-        with pytest.raises(ValueError, match="Ansatz is frozen"):
-            ansatz.zero_grad()
+        ansatz.zero_grad()
+        assert ansatz.gradients == {}
 
-    def test_update_frozen_raises(self):
+    def test_update_frozen_is_noop(self):
         ansatz = BasicQNN(n_qubits=3, layers=["XX"])
         ansatz.freeze()
-        with pytest.raises(ValueError, match="Ansatz is frozen"):
-            ansatz.update()
+        ansatz.update()
+        assert not ansatz.trainable

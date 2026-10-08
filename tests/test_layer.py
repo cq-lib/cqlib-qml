@@ -48,7 +48,7 @@ class TestLinear:
         layer.forward(X)
         dLdy = np.array([[0.5, 0.5]])
         dX = layer.backward(dLdy)
-        assert dX.shape == (3,)
+        assert dX.shape == (1, 3)
 
     def test_backward_batch(self):
         layer = Linear(in_dim=3, out_dim=2)
@@ -80,12 +80,29 @@ class TestLinear:
         assert np.any(layer._gradients["W"] != 0)
         layer.zero_grad()
         assert np.all(layer._gradients["W"] == 0)
+        first_dX = layer.backward(dLdy)
+        first_gradients = {key: value.copy() for key, value in layer.gradients.items()}
+        layer.zero_grad()
+        np.testing.assert_array_equal(layer.backward(dLdy), first_dX)
+        for key, value in first_gradients.items():
+            np.testing.assert_array_equal(layer.gradients[key], value)
 
     def test_freeze(self):
         layer = Linear(in_dim=3, out_dim=2)
         assert layer.trainable
+        layer.set_optimizer('sgd')
+        output = layer.forward(np.ones((1, 3)))
+        dX = layer.backward(np.ones_like(output))
+        parameters = {key: value.copy() for key, value in layer.parameters.items()}
         layer.freeze()
         assert not layer.trainable
+        layer.zero_grad()  # Frozen layers still allow clearing gradients.
+        np.testing.assert_array_equal(layer.backward(np.ones_like(output)), dX)
+        layer.update()
+        assert layer._optimizer.cur_step == 0
+        for key, value in parameters.items():
+            np.testing.assert_array_equal(layer.parameters[key], value)
+            assert not np.any(layer.gradients[key])
 
     def test_unfreeze(self):
         layer = Linear(in_dim=3, out_dim=2)

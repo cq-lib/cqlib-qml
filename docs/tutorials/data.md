@@ -108,7 +108,8 @@ DataLoader(
     dataset: Dataset,
     batch_size: int = 1,
     shuffle: bool = True,
-    drop_last: bool = True
+    drop_last: bool = True,
+    *, random_state=None
 )
 ```
 
@@ -118,6 +119,7 @@ DataLoader(
 | `batch_size` | int | 每批样本数量，默认 1 |
 | `shuffle` | bool | 是否在每个 epoch 随机打乱数据 |
 | `drop_last` | bool | 是否丢弃最后一个不完整批次 |
+| `random_state` | int/Generator/None | 控制独立的批次打乱随机流 |
 
 ### 核心方法
 
@@ -716,3 +718,8 @@ loader = DataLoader(dataset, batch_size=4, drop_last=True)
 | `get_mnist_dataloader()` | 完整 MNIST 加载流程 |
 
 `get_mnist_dataloader` 在使用 NEQR 时将量化后的归一化灰度转为 `0..grayscale-1` 的整数颜色索引；其 `grayscale` 参数必须与 NEQR 编码器一致。直接调用 NEQR 时也需提供整数索引。`change_grayscale` 返回新数组，不修改输入。
+
+
+## 统一训练契约
+
+DataLoader 新增 `random_state`，使用自身 Generator 打乱，不依赖全局 seed。`state_dict/load_state_dict` 保存和校验数据指纹、当前排列、下一批游标及 RNG；加载后的首次 iter 不重复打乱。可与 Module 的 `data_loader` checkpoint 参数配合使用，见 [训练契约](training_contracts.md)。

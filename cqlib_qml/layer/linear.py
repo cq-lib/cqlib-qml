@@ -98,6 +98,7 @@ class Linear(Layer):
         out_dim: int,
         bias: bool = True,
         act_fn: str = None,
+        *, random_state=None,
     ):
         """
         Initialize a Linear layer.
@@ -107,8 +108,9 @@ class Linear(Layer):
             out_dim (int): Output dimension.
             bias (bool, optional): Include bias term. Defaults to True.
             act_fn (str, optional): Activation function. Defaults to None.
+            random_state (int/Generator/None): Independent random stream.
         """
-        super(Linear, self).__init__()
+        super(Linear, self).__init__(random_state=random_state)
         self._in_dim = in_dim
         self._out_dim = out_dim
         self._bias = bias
@@ -155,16 +157,16 @@ class Linear(Layer):
         """
         # Kaiming uniform initialization for weights
         b = np.sqrt(1 / self._in_dim)
-        W = np.random.uniform(-b, b, size=(self._out_dim, self._in_dim))
+        W = self._rng.uniform(-b, b, size=(self._out_dim, self._in_dim))
         self._parameters["W"] = W
         self._gradients["W"] = np.zeros_like(W)
         if self._bias:
-            bias = np.random.uniform(-b, b, size=(1, self._out_dim))
+            bias = self._rng.uniform(-b, b, size=(1, self._out_dim))
             self._parameters["b"] = bias
             self._gradients["b"] = np.zeros_like(bias)
         self._init = True
 
-    def load_params(self, summary_dict: dict) -> None:
+    def _load_params_in_place(self, summary_dict: dict) -> None:
         """Validate parameter shapes before restoring a classical layer."""
         expected = {"W": (self._out_dim, self._in_dim)}
         if self._bias:
@@ -173,9 +175,9 @@ class Linear(Layer):
         if set(parameters) != set(expected):
             raise ValueError("Checkpoint parameter keys do not match the layer.")
         for name, shape in expected.items():
-            if np.shape(parameters[name]) != shape:
+            if np.shape(parameters[name]) != shape or np.iscomplexobj(parameters[name]) or not np.all(np.isfinite(parameters[name])):
                 raise ValueError(f"Checkpoint parameter {name} shape does not match {shape}.")
-        super().load_params(summary_dict)
+        super()._load_params_in_place(summary_dict)
         self._X = []
         for name in self._derived_variables:
             self._derived_variables[name] = None
@@ -204,16 +206,16 @@ class Linear(Layer):
             >>>
             >>> # Single sample
             >>> X = np.random.randn(10)
-            >>> output = layer.forward(X)  # Shape: (5,)
+            >>> output = layer.forward(X)  # Shape: (1, 5)
         """
         self._forward_valid = False
-        self._gradient_valid = False
         if X is None:
             raise ValueError("Input should not be None.")
+        X = np.asarray(X)
         if X.ndim == 1:
             X = X.reshape(1, -1)
-        if X.shape[1] != self._in_dim:
-            raise ValueError(f"Input dimension {X.shape[1]} does not match expected {self._in_dim}.")
+        if X.ndim != 2 or not len(X) or X.shape[1] != self._in_dim:
+            raise ValueError(f"Input shape {X.shape} does not match expected (batch, {self._in_dim}).")
         if not self._init:
             self.init_params()
         W = self._parameters["W"]
@@ -273,12 +275,17 @@ class Linear(Layer):
         Args:
             dLdy (np.ndarray): Gradients of the loss with respect to
                 the layer output. Shape: (batch_size, out_dim) or (out_dim,).
-            retain_grad (bool, optional): Whether to retain gradients
-                for parameter updates. Defaults to True.
+            retain_grad (bool, optional): Whether to accumulate parameter gradients
+                for updates, respecting freeze(). Defaults to True.
+
+        Note:
+            zero_grad clears accumulated parameter gradients and preserves the
+            last recorded forward cache. Input gradients are returned even when
+            parameter gradient accumulation is disabled.
 
         Returns:
             np.ndarray: Gradients with respect to the input.
-                Shape: (batch_size, in_dim) or (in_dim,) for single sample.
+                Shape: (batch_size, in_dim), including single samples.
 
         Raises:
             ValueError: If forward state is unavailable or dimensions mismatch.
@@ -289,10 +296,10 @@ class Linear(Layer):
             >>>
             >>> # Single sample
             >>> dLdy = np.random.randn(5)
-            >>> dX = layer.backward(dLdy)  # Shape: (10,)
+            >>> dX = layer.backward(dLdy)  # Shape: (1, 10)
         """
         if not self._forward_valid:
-            raise ValueError("Run a training forward before backward (including after zero_grad)")
+            raise ValueError("Run a recorded forward before backward")
         retain_grad = retain_grad and self._trainable
         if isinstance(dLdy, numbers.Number):
             dLdy = np.array([dLdy])
@@ -303,11 +310,11 @@ class Linear(Layer):
         if dLdy.shape[1] != self._out_dim:
             raise ValueError(f"Gradient dimension {dLdy.shape[1]} does not match output dimension {self._out_dim}.")
         if not isinstance(self._X, np.ndarray) or self._derived_variables.get("z") is None:
-            raise ValueError("Run forward before backward (including after zero_grad).")
+            raise ValueError("Run a recorded forward before backward")
         if self._X.shape[0] != dLdy.shape[0]:
             raise ValueError(f"Batch size mismatch: input batch {self._X.shape[0]} vs gradient batch {dLdy.shape[0]}.")
 
-        self._gradient_valid = retain_grad
+        self._gradient_valid = self._gradient_valid or retain_grad
         dX = []
         X = self._X
         for index, (dy, x) in enumerate(zip(dLdy, X)):
@@ -325,4 +332,4 @@ class Linear(Layer):
                 self._gradients["W"] += dw
                 if self._bias:
                     self._gradients["b"] += db
-        return dX[0] if len(X) == 1 else np.array(dX)
+        return np.asarray(dX).reshape(len(X), self.in_dim)

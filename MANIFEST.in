@@ -5,6 +5,7 @@ include pyproject.toml
 include requirements.txt
 recursive-include cqlib_qml *.py
 recursive-include docs/tutorials *.md
+recursive-include release_notes *.md
 recursive-include scripts *.py *.sh
 recursive-include tests *.py
 include requirements-dev.txt

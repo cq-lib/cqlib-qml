@@ -42,6 +42,8 @@ $$\boldsymbol{\theta}_{t+1} = \boldsymbol{\theta}_t - \eta \cdot \text{update}(\
 
 ### 使用示例
 
+`reset_state()` 清空参数缓存、步数、学习率缓存和调度器历史，同时保留具体类型及配置；`reset_step()` 只清步数。VQC 的默认 fit 和 warm start 在私有优化器副本上调用 `reset_state()`。自定义优化器有额外训练历史时应覆盖该方法并调用 `super().reset_state()`；自定义有状态调度器同样需要覆盖 `SchedulerBase.reset_state()`。实例形式支持自定义类型，字符串及字典配置重建仍使用内置类型。
+
     from cqlib_qml.optimizer import OptimizerBase
     import numpy as np
 
@@ -512,6 +514,7 @@ $$\theta_{t+1} = \theta_t - \eta \frac{\hat{m}_t}{\sqrt{\hat{v}_t} + \epsilon}$$
 | `update(param, param_grad, param_name, cur_loss=None)` | 更新参数 |
 | `step()` | 步进计数器 |
 | `reset_step()` | 重置计数器 |
+| `reset_state()` | 清空优化器和调度器训练历史，保留类型与配置 |
 | `set_scheduler(scheduler)` | 设置学习率调度器 |
 | `remove_scheduler()` | 移除调度器 |
 | `copy()` | 复制优化器 |

@@ -73,8 +73,17 @@ def train(
         >>> for epoch in range(10):
         ...     train(epoch, 0, model, train_loader, loss_fun, "./checkpoints/", 10)
     """
+    restored = getattr(net, "_resume_data_loader_state", None)
+    enumeration_start = 0
+    if restored is not None:
+        if not hasattr(train_loader, "load_state_dict"):
+            raise ValueError("Exact resume requires the project DataLoader")
+        train_loader.load_state_dict(restored)
+        enumeration_start = 0 if restored["next_batch"] == len(train_loader) else restored["next_batch"]
+        net._resume_data_loader_state = None
+        it_start = enumeration_start
     loader = tqdm.tqdm(train_loader, desc="Training epoch {}".format(ep + 1), leave=True)
-    for it, (x_train, y_train) in enumerate(loader):
+    for it, (x_train, y_train) in enumerate(loader, start=enumeration_start):
         if it < it_start:
             continue
         it_start = 0
@@ -108,7 +117,7 @@ def train(
         # Save checkpoint
         latest = (ep + 1) == total_epochs and (it + 1) == len(loader)
         if (it != 0 and it % 30 == 0) or latest:
-            net.save_checkpoint(model_path, ep, it, latest)
+            net.save_checkpoint(model_path, ep, it, latest, data_loader=train_loader if hasattr(train_loader, "state_dict") else None)
 
 
 def validate(ep: int, net: QNN, test_loader, loss_fun, batch_size: int, tb: Optional[Any] = None) -> tuple:

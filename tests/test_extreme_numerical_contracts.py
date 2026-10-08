@@ -77,15 +77,18 @@ def test_failed_inference_invalidates_training_state_and_can_recover(cls, bad_in
     bindings = dict(model._ansatz._bindings)
     weights = model._linear.parameters['W'].copy() if cls is HQNN else None
     steps = [net._optimizer.cur_step for net in model._nets]
+    from cqlib_qml._state import clone_state
+    reference = clone_state(model)
+    reference.update()
     with pytest.raises(ValueError):
         model.forward(bad_input, trainable=False)
     with pytest.raises(ValueError, match='forward|training'):
         model.backward(np.ones_like(output))
     model.update()
-    assert model._ansatz._bindings == bindings
-    assert [net._optimizer.cur_step for net in model._nets] == steps
+    assert model._ansatz._bindings == reference._ansatz._bindings
+    assert [net._optimizer.cur_step for net in model._nets] == [step + 1 for step in steps]
     if weights is not None:
-        np.testing.assert_array_equal(model._linear.parameters['W'], weights)
+        np.testing.assert_array_equal(model._linear.parameters['W'], reference._linear.parameters['W'])
     output = model.forward(circuits)
     model.backward(np.ones_like(output))
     model.update()

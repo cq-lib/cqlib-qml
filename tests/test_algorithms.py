@@ -489,7 +489,7 @@ class TestVQC:
         vqc = VQC(ansatz, AngleEncoder(mode="classical"), loss="BCE",
                   epochs=2, batch_size=2, optimizer="sgd(lr=0.01)", verbose=False)
         vqc.fit(np.array([[0.1, 0.3], [0.5, 0.8]]), np.array([0, 1]))
-        assert abs(ansatz._bindings["params0_0"] - initial["params0_0"]) > 1e-5
+        assert abs(vqc.ansatz_._bindings["params0_0"] - initial["params0_0"]) > 1e-5
 
 
 # ============================================================================

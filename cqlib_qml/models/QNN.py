@@ -59,6 +59,7 @@ class QNN(Module):
             Defaults to None.
         optimizer (Union[str, dict, OptimizerBase], optional): The optimizer
             for training. Defaults to "adam".
+        random_state (int/Generator/None): Independent initialization RNG.
 
     Attributes:
         _ansatz (Ansatz): The quantum circuit ansatz.
@@ -86,6 +87,7 @@ class QNN(Module):
         readouts: list = None,
         params: np.ndarray = None,
         optimizer: Union[str, dict, OptimizerBase] = "adam",
+        *, random_state=None,
     ):
         """
         Initialize a QNN model.
@@ -95,6 +97,7 @@ class QNN(Module):
             readouts (list, optional): Readout qubits. Defaults to None.
             params (np.ndarray, optional): Initial parameters. Defaults to None.
             optimizer (Union[str, dict, OptimizerBase]): Optimizer. Defaults to "adam".
+            random_state (int/Generator/None): Independent initialization RNG.
 
         Raises:
             ValueError: If readouts are not available.
@@ -102,13 +105,13 @@ class QNN(Module):
         self._ansatz = ansatz
         if params is not None:
             params = validate_initial_params(ansatz, params)
-            bindings = dict(zip(ansatz.symbols, params))
-            self._ansatz.assign_parameters(bindings)
+            bindings = dict(zip(ansatz.weight_params, params))
+            self._ansatz.assign_weights(bindings)
         readouts = readouts if readouts is not None else self._ansatz.readouts
         if readouts is None:
             raise ValueError("Must provide readouts.")
         self._ansatz.set_measurement(readouts=readouts)
-        super(QNN, self).__init__(self._ansatz)
+        super(QNN, self).__init__(self._ansatz, random_state=random_state)
         self.set_optimizer(optimizer)
 
     def forward(self, data_circuits: Union[Circuit, List[Circuit]], trainable: bool = True):
@@ -121,11 +124,11 @@ class QNN(Module):
         Args:
             data_circuits (Union[Circuit, List[Circuit]]): Data circuits
                 after encoding. Can be a single Circuit or a list.
-            trainable (bool, optional): Whether to enable training mode.
+            trainable (bool, optional): Whether to record backward caches.
                 If True, retains training state while respecting freeze().
-                If False, clears old gradients and backward caches before
-                validating inputs, even if the call fails. Freeze status is
-                unchanged. Defaults to True.
+                If False, discards backward caches before
+                validating inputs, even if the call fails. Accumulated gradients
+                are preserved. Freeze status is unchanged. Defaults to True.
 
         Returns:
             Union[float, np.ndarray]: Expectation values from the quantum
@@ -148,7 +151,7 @@ class QNN(Module):
 def validate_initial_params(ansatz, params):
     """Validate the complete real parameter vector before changing an ansatz."""
     values = np.asarray(params)
-    if (values.ndim != 1 or len(values) != len(ansatz.symbols)
+    if (values.ndim != 1 or len(values) != ansatz.num_weights
             or values.dtype.kind not in "iuf" or not np.isfinite(values).all()):
-        raise ValueError("Initial params must be a finite real vector matching ansatz.symbols")
+        raise ValueError("Initial params must be a finite real vector matching ansatz.weight_params")
     return values
