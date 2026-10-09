@@ -24,9 +24,14 @@ Examples:
     >>> circuits = encoder(data)
 """
 
+from __future__ import annotations
+
 import numpy as np
-from typing import List
-from cqlib.circuit import Circuit
+from typing import List, TYPE_CHECKING
+from cqlib.circuit import Circuit, Parameter
+
+if TYPE_CHECKING:
+    from cqlib_qml.ansatz import Ansatz
 
 
 class ZZFeatureEncoder:
@@ -118,6 +123,47 @@ class ZZFeatureEncoder:
                 for j in range(i + 1, n_qubits):
                     pairs.append((i, j))
         return pairs
+
+    def to_ansatz(self, ansatz: Ansatz, *, num_features: int,
+                  input_prefix: str = "x") -> Ansatz:
+        """Prepend symbolic ZZ encoding to an independent base Ansatz.
+
+        One feature per source qubit is required. Features keep numeric order
+        as ``{input_prefix}_0, ...``; repeated gates share the same symbols.
+        This entry requires positive integer repetitions and follows the same
+        ownership, weight and qubit-position contract as AngleEncoder.to_ansatz.
+        Numerical ``encoder(data)`` behavior is unchanged.
+
+        Args:
+            ansatz: Source training circuit, without existing input roles.
+            num_features: Positive feature count equal to the source width.
+            input_prefix: Identifier prefix for generated input symbols.
+
+        Returns:
+            Ansatz: Owned encoding-plus-training circuit with explicit roles.
+
+        Raises:
+            TypeError: Argument types or the differentiator are unsupported.
+            ValueError: Repetitions, width, roles, qubit IDs or names are invalid.
+        """
+        from ._symbolic import compose_encoding, positive_integer
+
+        num_features = positive_integer(num_features, "num_features")
+        positive_integer(self._n_repeats, "n_repeats")
+        return compose_encoding(ansatz, num_features=num_features, num_qubits=num_features,
+                                input_prefix=input_prefix, build=self._build_symbolic)
+
+    def _build_symbolic(self, names):
+        circuit = Circuit(len(names))
+        values = [Parameter(name) for name in names]
+        for _ in range(int(self._n_repeats)):
+            for i in range(len(names)):
+                circuit.h(i)
+            for i, value in enumerate(values):
+                circuit.rz(i, 2 * np.pi * value)
+            for i, j in self._get_entanglement_pairs(len(names)):
+                circuit.rzz(i, j, (np.pi - values[i]) * (np.pi - values[j]))
+        return circuit
 
     def __call__(self, data: np.ndarray) -> List[Circuit]:
         """

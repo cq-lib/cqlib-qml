@@ -6,6 +6,10 @@
 
 量子层现在支持显式输入/权重角色、端到端梯度和微批次累积。VQC 支持可复现重训、warm start 及版本化 checkpoint 完整续训。API、恢复边界和行为迁移见 [训练契约教程](docs/tutorials/training_contracts.md)。
 
+原生 PyTorch 联合训练可使用 `from cqlib_qml.torch import QuantumLayer`，支持多维 batch、输入与量子权重梯度及结构校验的 `state_dict()`。见 [Torch 教程](docs/tutorials/torch.md) 和 [可运行训练示例](examples/torch_hybrid.py)。
+
+Angle、ZZ 编码器提供 `encoder.to_ansatz(body, num_features=...)`，自动构建可微输入符号并组合训练电路，支持将梯度传回前面的经典网络。接口边界见 [符号编码教程](docs/tutorials/encoder.md#保留输入梯度的符号编码)。
+
 ## 安装说明
 
 环境要求：Python 3.11 及以上版本，cqlib 2.0.0b3 及以上版本。
@@ -39,6 +43,7 @@ pip install -e .
 - **algorithms**：量子核方法 `QKM`、量子支持向量机 `QSVM` 和兼容 scikit-learn 接口的变分量子分类器 `VQC`。
 - **differentiator**：伴随法和参数偏移法量子梯度计算。
 - **layer**：全连接层与常用激活函数，用于构建混合模型的经典部分。
+- **torch**：CPU 量子期望值层 `QuantumLayer`，接入原生 PyTorch 网络和优化器。
 - **data**：数据集、批加载和图像数据预处理工具。
 - **loss / optimizer / scheduler**：常用损失函数、参数优化器和学习率调度器。
 - **utils**：量子门梯度矩阵等辅助工具。

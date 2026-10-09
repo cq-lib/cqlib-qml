@@ -8,11 +8,11 @@ from cqlib.qis import Hamiltonian, PauliString, Phase
 from cqlib.qis.state import Statevector
 
 from cqlib_qml.algorithms import QKM, QSVM, VQC
-from cqlib_qml.ansatz import HEAnsatz
+from cqlib_qml.ansatz import Ansatz, HEAnsatz
 from cqlib_qml.data import DataLoader, Dataset
 from cqlib_qml.differentiator import AdjointDifferentiator, ParameterShiftDifferentiator
 from cqlib_qml.encoder import AmplitudeEncoder, AngleEncoder, FRQI, NEQR
-from cqlib_qml.loss import MSELoss, SoftmaxCrossEntropy
+from cqlib_qml.loss import BCELoss, MSELoss, SoftmaxCrossEntropy
 from cqlib_qml.models import QNN, HQNN
 from cqlib_qml.optimizer import SGD
 from cqlib_qml.scheduler import KingScheduler
@@ -80,6 +80,105 @@ def test_observable_pauli_phase_is_preserved(factory, exponent):
 
 def training_data():
     return np.array([[.1, .2], [.3, .4], [.9, 1.], [1.2, 1.3]]), np.array([0, 0, 1, 1])
+
+
+@pytest.mark.parametrize('subclass', [False, True])
+def test_qnn_bce_loops_use_probabilities_and_correct_chain_rule(tmp_path, subclass):
+    from cqlib_qml.algorithms import QNN_classification
+
+    class CustomBCE(BCELoss):
+        pass
+
+    class Probe:
+        def __init__(self):
+            self.gradients = []
+            self.losses = []
+            self.scalars = {}
+
+        def forward(self, X, trainable=True):
+            return X.reshape(-1, 1)
+
+        def backward(self, gradient):
+            self.gradients.append(gradient.copy())
+
+        def update(self, cur_loss):
+            self.losses.append(cur_loss)
+
+        def zero_grad(self):
+            pass
+
+        def add_scalar(self, name, value, step):
+            self.scalars.setdefault(name, []).append(value)
+
+    model = Probe()
+    loss = CustomBCE() if subclass else BCELoss()
+    batches = [(np.array([.6, -.6]), np.array([0, 1])),
+               (np.array([0.]), np.array([0]))]
+    QNN_classification.train(0, 0, model, batches, loss, str(tmp_path), 2, tb=model)
+    np.testing.assert_allclose(model.losses, [-np.log(.8), -np.log(.5)])
+    np.testing.assert_allclose(model.gradients[0], [[-.3125], [.3125]])
+    np.testing.assert_allclose(model.gradients[1], [[-1.]])
+    assert model.scalars['train/accuracy'] == [1., 0.]
+
+    average_loss, accuracy = QNN_classification.validate(0, model, batches, loss, 2)
+    assert average_loss == pytest.approx(-(2 * np.log(.8) + np.log(.5)) / 3)
+    assert accuracy == pytest.approx(2 / 3)
+
+
+def test_qnn_bce_training_matches_analytic_parameter_update(tmp_path):
+    from cqlib_qml.algorithms import QNN_classification
+
+    ansatz = Ansatz(1)
+    ansatz.ry(0, Parameter('theta'))
+    model = QNN(ansatz, readouts=[0], params=np.array([.8]), optimizer=SGD(lr=.02))
+    batches = [([Circuit(1), Circuit(1)], np.array([0, 0]))]
+    QNN_classification.train(0, 0, model, batches, BCELoss(), str(tmp_path), 2)
+    np.testing.assert_allclose(ansatz.weights, [.8 - .02 * np.tan(.4)], atol=1e-12)
+    loss, accuracy = QNN_classification.validate(0, model, batches, BCELoss(), 2)
+    assert np.isfinite(loss)
+    assert accuracy == 1.
+
+
+@pytest.mark.parametrize('retain_derived', [False, True])
+@pytest.mark.parametrize('value,batched', [
+    (np.nan, False), (np.inf, False), (-np.inf, True),
+    (complex(0, np.nan), True), (complex(0, np.inf), False),
+])
+def test_ansatz_rejects_nonfinite_initial_states(value, batched, retain_derived):
+    ansatz = Ansatz(1)
+    ansatz.ry(0, Parameter('theta'))
+    ansatz.assign_weights([.3])
+    ansatz.set_measurement(readouts=[0])
+    state = np.array([value, 0], dtype=complex)
+    if batched:
+        state = np.array([[1., 0.], state])
+    with pytest.raises(ValueError, match='finite'):
+        ansatz.forward(quantum_state=state, retain_derived=retain_derived)
+
+
+@pytest.mark.parametrize('value', [np.nan, np.inf, -np.inf, complex(0, np.nan), complex(0, np.inf)])
+def test_parameter_shift_rejects_nonfinite_initial_states(value):
+    circuit = Circuit(1)
+    circuit.ry(0, Parameter('theta'))
+    with pytest.raises(ValueError, match='finite'):
+        ParameterShiftDifferentiator().run(
+            circuit, {'theta': .3}, readouts=[0], initial_state=np.array([value, 0]))
+
+
+@pytest.mark.parametrize('method', ['adjoint', 'parameter_shift'])
+def test_complex_initial_states_preserve_expectations_and_gradients(method):
+    ansatz = Ansatz(1)
+    ansatz.ry(0, Parameter('theta'))
+    ansatz.assign_weights([.3])
+    ansatz.set_measurement(readouts=[0])
+    ansatz.set_differentiator(method)
+    state = np.array([np.sqrt(.75), .5j])
+    np.testing.assert_allclose(ansatz.forward(quantum_state=state), [[.5 * np.cos(.3)]])
+    ansatz.backward()
+    assert ansatz.gradients['theta'] == pytest.approx(-.5 * np.sin(.3))
+    batch = np.array([state, [0., 1.]])
+    np.testing.assert_allclose(ansatz.forward(quantum_state=batch, retain_derived=False),
+                               [[.5 * np.cos(.3)], [-np.cos(.3)]])
 
 
 def test_qsvm_owns_training_snapshot():

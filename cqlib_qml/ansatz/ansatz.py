@@ -995,6 +995,8 @@ class Ansatz:
             vectors = vectors.reshape(1, -1)
         if vectors.shape[1] != 1 << n_qubits:
             raise ValueError(f"State vector dimension {vectors.shape[1]} does not match {1 << n_qubits}.")
+        if not np.all(np.isfinite(vectors)):
+            raise ValueError("Quantum state amplitudes must be finite.")
         return vectors
 
     def append(

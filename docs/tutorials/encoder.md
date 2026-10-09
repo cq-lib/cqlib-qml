@@ -17,6 +17,59 @@
 
 ---
 
+## 保留输入梯度的符号编码
+
+`AngleEncoder.to_ansatz()` 和 `ZZFeatureEncoder.to_ansatz()` 将编码电路前置于已有 Ansatz，返回独立的基础 `Ansatz`。输入自动成为电路符号，因此可直接求输入 Jacobian，也可以接入 Torch，训练编码之前的经典网络。原有 `encoder(data)` 仍返回数值电路，接口和公式不变。
+
+```python
+from cqlib.circuit import Parameter
+from cqlib_qml.ansatz import Ansatz
+from cqlib_qml.encoder import AngleEncoder
+
+body = Ansatz(2, random_state=7)
+body.ry(0, Parameter("theta"))
+body.cx(0, 1)
+body.set_measurement(readouts=[0, 1])
+body.set_differentiator("adjoint")  # 或 parameter_shift
+encoded = AngleEncoder().to_ansatz(body, num_features=2)
+# encoded.input_params == ["x_0", "x_1"]；body 保持原样
+values = encoded.forward([[.2, .4], [.3, -.1]])
+encoded.backward()
+print(encoded.input_jacobian)  # (batch, outputs, inputs)
+```
+
+统一签名为 `encoder.to_ansatz(ansatz, *, num_features, input_prefix="x")`。输入按 `x_0, x_1, …, x_10, …` 的数字顺序绑定；`input_prefix` 必须完整匹配 `[A-Za-z_][A-Za-z0-9_]*`，生成的名称与已有符号冲突时拒绝。`num_features` 和此入口的 ZZ 重复次数必须是正整数，接受 `np.integer`，拒绝 Python/NumPy 布尔值。ZZ 构造函数和数值入口的重复次数行为不变。
+
+| 编码 | 宽度要求 | 每层公式 |
+| --- | --- | --- |
+| Angle classical | `Q = num_features` | 第 i 位执行 `RY(2*x_i)` |
+| Angle dense | `Q = ceil(num_features/2)` | 第 i 位依次执行 `RY(2*x_2i)`、`RZ(x_2i+1)`；最后缺失的相位取 0 |
+| ZZ | `Q = num_features` | 每次重复依次执行全部 H、`RZ(2*π*x_i)`、各边的 `RZZ((π-x_i)*(π-x_j))` |
+
+ZZ 支持 `linear`、`full` 和 `circular`。重复层共享同一组输入符号，输入梯度包含所有出现位置的贡献。保持既有数值编码的边顺序；两比特 `circular` 包含 `(0,1)` 和 `(1,0)` 两条边。dense 的相位是否影响输出取决于后续电路及测量；直接测 Z 可能对相位不敏感，这不代表梯度链路丢失。
+
+组合入口要求源 Ansatz 没有已声明的输入、没有 `add_encoder()` 附着的数值编码。已有权重角色必须仍完整覆盖源电路符号；未声明角色时按原有符号顺序作为权重。支持空训练电路和零权重；测量可稍后配置，但执行前必须满足现有测量要求。
+
+源 qubit ID 必须是 `0…Q−1` 的排列。编码特征与源 qubits 的**位置顺序**对应，返回对象统一编号为 `0…Q−1`。例如源顺序 `[1,0]` 中，源 ID 1 映射到返回对象的 ID 0，源 ID 0 映射到 ID 1。readouts 沿用原接口的位置索引语义，Hamiltonian 也保持位置顺序。稀疏编号如 `[5,2]` 在入口拒绝。
+
+返回对象独立拥有电路、已赋权重、测量、微分配置和 RNG；修改任一对象不影响另一对象。不会继承源子类的其他属性、优化器、训练缓存或累计梯度，也不会消耗源 RNG。新对象始终 `training=True`、`trainable=True`，`updatable` 由是否存在权重决定。
+
+权重初始化和保存恢复的边界如下：
+
+| 接口 | 行为 |
+| --- | --- |
+| `to_ansatz()` | 保留完整或部分已有权重，不初始化缺失项 |
+| `Ansatz.forward(X)` | 保留已赋权重，仅初始化缺失项；只接受一维/二维输入，单样本输出仍为 `(1, out_dim)` |
+| `QuantumLayer(encoded)` | 完整权重才继承；部分赋值时整组使用 Torch 初始化。需要保留部分值时显式传完整的 `initial_weights` |
+| 原生 `summary` / `load_params()` | 沿用原生结构校验；非空部分权重需补齐后恢复。输出维度须兼容，加载会恢复保存的测量、微分及 RNG 等原生状态 |
+| Torch `state_dict()` | 校验实际电路、参数角色、测量和微分配置；优化器单独保存 |
+
+checkpoint 不记录编码器配置身份：例如两比特 ZZ 的 `linear` 和 `full` 若生成相同电路，不承诺因名称不同而拒绝。返回基础 Ansatz 的恢复目标应通过相同组合入口重建。
+
+本入口仅覆盖上述 Angle 和 ZZ 编码。振幅、基态、图像编码的可微适配分别评估；现有 QNN/HQNN 调用方式保持不变。Torch 联合训练、冻结和 batch 语义见 [Torch 教程](torch.md)。
+
+---
+
 ## 背景与数学原理
 
 ### 为什么要进行量子编码？

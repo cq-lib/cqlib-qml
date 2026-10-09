@@ -193,6 +193,7 @@ class DataLoader:
         """Set the dataset and reset iteration state."""
         self._dataset = dataset
         self._resume_pending = False
+        self._iteration_started = False
         self._it = 0
         self._end = self.__len__()
         self._idx = np.arange(len(self._dataset))

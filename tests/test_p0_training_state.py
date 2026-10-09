@@ -724,6 +724,74 @@ def test_loader_restores_format_one_without_iteration_started():
     assert_exact_state(restored.state_dict(), source.state_dict())
 
 
+@pytest.mark.parametrize('drop_last', [False, True])
+def test_loader_restore_after_dataset_replacement_preserves_shuffle(drop_last):
+    source = DataLoader(Dataset(np.arange(8)), batch_size=2, random_state=7,
+                        drop_last=drop_last)
+    next(iter(source))
+    rng_state = deepcopy(source._rng.bit_generator.state)
+    dataset = Dataset(np.arange(11))
+    source.dataset = dataset
+    assert_exact_state(source._rng.bit_generator.state, rng_state)
+    saved = source.state_dict()
+    restored = DataLoader(dataset, batch_size=2, random_state=99, drop_last=drop_last)
+    restored.load_state_dict(saved)
+    for _ in range(2):
+        assert_exact_state(list(restored), list(source))
+        assert_exact_state(restored.state_dict(), source.state_dict())
+    assert saved['iteration_started'] is False
+
+
+@pytest.mark.parametrize('bias', [False, True])
+def test_linear_init_params_invalidates_recorded_forward(bias):
+    layer = Linear(1, 1, bias=bias, random_state=7)
+    X = np.array([[2.]])
+    layer.forward(X)
+    layer.backward(np.ones((1, 1)))
+    layer.init_params()
+    with pytest.raises(ValueError, match='forward'):
+        layer.backward(np.ones((1, 1)))
+    assert not layer._gradient_valid
+    for gradient in layer.gradients.values():
+        np.testing.assert_array_equal(gradient, np.zeros_like(gradient))
+    layer.forward(X)
+    np.testing.assert_allclose(layer.backward(np.ones((1, 1))), layer._parameters['W'])
+
+
+def test_linear_init_params_prevents_update_with_old_adam_momentum():
+    layer = Linear(1, 1, random_state=7)
+    layer.set_optimizer('adam(lr=.1)')
+    X = np.array([[2.]])
+    layer.forward(X)
+    layer.backward(np.ones((1, 1)))
+    layer.update()
+    optimizer_state = deepcopy(layer._optimizer.state_dict())
+    layer.init_params()
+    parameters = deepcopy(layer._parameters)
+    layer.update()
+    assert_exact_state(layer._parameters, parameters)
+    assert_exact_state(layer._optimizer.state_dict(), optimizer_state)
+    layer.forward(X)
+    layer.backward(np.ones((1, 1)))
+    layer.update()
+    assert not np.array_equal(layer._parameters['W'], parameters['W'])
+
+
+def test_linear_set_activation_invalidates_recorded_forward():
+    layer = Linear(1, 1, bias=False, random_state=7)
+    X = np.array([[-2.]])
+    layer.forward(X)
+    layer.backward(np.ones((1, 1)))
+    gradients = deepcopy(layer.gradients)
+    layer.set_activation('relu')
+    with pytest.raises(ValueError, match='forward'):
+        layer.backward(np.ones((1, 1)))
+    assert_exact_state(layer.gradients, gradients)
+    layer.zero_grad()
+    np.testing.assert_array_equal(layer.forward(X), [[0.]])
+    np.testing.assert_array_equal(layer.backward(np.ones((1, 1))), [[0.]])
+
+
 @pytest.mark.parametrize('hybrid', [False, True])
 def test_random_init_discards_old_gradients_and_forward_cache(hybrid):
     q = Ansatz(1)

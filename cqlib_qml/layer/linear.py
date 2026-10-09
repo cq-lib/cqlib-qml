@@ -142,6 +142,7 @@ class Linear(Layer):
             >>> layer.set_activation(None)  # No activation
         """
         self._act_fn = ActivationInitializer(act_fn)()
+        self._invalidate_gradients()
 
     def init_params(self) -> None:
         """
@@ -165,6 +166,8 @@ class Linear(Layer):
             self._parameters["b"] = bias
             self._gradients["b"] = np.zeros_like(bias)
         self._init = True
+        self.zero_grad()
+        self._invalidate_gradients()
 
     def _load_params_in_place(self, summary_dict: dict) -> None:
         """Validate parameter shapes before restoring a classical layer."""
