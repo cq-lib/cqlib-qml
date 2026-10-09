@@ -8,6 +8,8 @@
 
 原生 PyTorch 联合训练可使用 `from cqlib_qml.torch import QuantumLayer`，支持多维 batch、输入与量子权重梯度及结构校验的 `state_dict()`。见 [Torch 教程](docs/tutorials/torch.md) 和 [可运行训练示例](examples/torch_hybrid.py)。
 
+Angle、ZZ 编码器提供 `encoder.to_ansatz(body, num_features=...)`，自动构建可微输入符号并组合训练电路，支持将梯度传回前面的经典网络。接口边界见 [符号编码教程](docs/tutorials/encoder.md#保留输入梯度的符号编码)。
+
 ## 安装说明
 
 环境要求：Python 3.11 及以上版本，cqlib 2.0.0b3 及以上版本。

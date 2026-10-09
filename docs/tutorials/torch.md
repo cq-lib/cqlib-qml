@@ -35,6 +35,37 @@ optimizer.step()
 
 量子输入必须作为符号出现在 Ansatz 中，并通过 `set_parameter_roles()` 声明列顺序。数值编码电路不能保留输入的可微关系；附着了 `add_encoder()` 编码电路的 Ansatz 会被拒绝。
 
+## 使用编码器自动声明输入
+
+Angle 和 ZZ 编码支持 `to_ansatz()`，无需手写输入符号：
+
+```python
+import torch
+from cqlib.circuit import Parameter
+from cqlib_qml.ansatz import Ansatz
+from cqlib_qml.encoder import AngleEncoder, ZZFeatureEncoder
+from cqlib_qml.torch import QuantumLayer
+
+body = Ansatz(2)
+body.ry(0, Parameter("theta"))
+body.rx(1, Parameter("phi"))
+body.set_parameter_roles(input_params=[], weight_params=["theta", "phi"])
+body.set_measurement(readouts=[0, 1])
+body.set_differentiator("parameter_shift")
+encoded = AngleEncoder().to_ansatz(body, num_features=2)
+# 也可以使用 ZZFeatureEncoder(n_repeats=2).to_ansatz(body, num_features=2)
+model = torch.nn.Sequential(
+    torch.nn.Linear(4, encoded.num_inputs),
+    QuantumLayer(encoded, initial_weights=[.3, -.2]),
+    torch.nn.Linear(encoded.out_dim, 2),
+)
+features = torch.randn(3, 4)
+model(features).square().mean().backward()
+assert model[0].weight.grad is not None  # 输入梯度穿过编码器传回前层
+```
+
+`to_ansatz()` 产生独立对象，自动按数字顺序声明 `x_0, x_1, …`，保留原权重顺序及测量/微分配置，不初始化缺失权重。编码公式、qubit 位置映射、校验规则和原生 checkpoint 边界见 [编码器教程](encoder.md#保留输入梯度的符号编码)。
+
 构造接口为 `QuantumLayer(ansatz, initial_weights=None, dtype=None)`。`weight` 是按声明顺序排列的 `nn.Parameter`；`num_inputs`、`num_weights`、`num_outputs` 为只读维度。初始化优先使用显式权重，其次完整的 Ansatz 权重，否则在 `[-π, π]` 上使用 Torch 均匀初始化；部分 Ansatz 权重不会混用。构造后修改原 Ansatz 不影响量子层。
 
 ## 输入、梯度与状态
@@ -102,6 +133,8 @@ optimizer.load_state_dict(saved["optimizer"])
 python examples/torch_hybrid.py --method adjoint
 python examples/torch_hybrid.py --method parameter_shift
 python examples/torch_hybrid.py --checkpoint /tmp/hybrid.pt
+python examples/torch_hybrid.py --encoding angle
+python examples/torch_hybrid.py --encoding zz --method parameter_shift
 ```
 
 示例使用固定种子的合成回归数据、原生 Torch DataLoader 和 Adam，检查所有网络参数的梯度、损失下降，以及权重和优化器恢复后的一次相同更新。默认使用临时 checkpoint；指定 `--checkpoint` 可以保留文件。

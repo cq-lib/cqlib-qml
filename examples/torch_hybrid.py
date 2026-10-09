@@ -3,6 +3,8 @@
 Run after installing the package:
     python examples/torch_hybrid.py --method adjoint
     python examples/torch_hybrid.py --method parameter_shift
+    python examples/torch_hybrid.py --encoding angle
+    python examples/torch_hybrid.py --encoding zz --method parameter_shift
 """
 import argparse
 from pathlib import Path
@@ -13,18 +15,31 @@ from torch.utils.data import DataLoader, TensorDataset
 from cqlib.circuit import Parameter
 
 from cqlib_qml.ansatz import Ansatz
+from cqlib_qml.encoder import AngleEncoder, ZZFeatureEncoder
 from cqlib_qml.torch import QuantumLayer
 
 
-def build_model(method):
+def build_model(method, encoding='manual'):
     q = Ansatz(2)
-    x0, x1, theta, phi = [Parameter(name) for name in ('x0', 'x1', 'theta', 'phi')]
-    q.ry(0, x0 + theta)
-    q.rx(1, x1)
-    q.cx(0, 1)
-    q.rz(0, phi)
-    q.ry(1, theta)
-    q.set_parameter_roles(input_params=[x0, x1], weight_params=[theta, phi])
+    theta, phi = Parameter('theta'), Parameter('phi')
+    if encoding == 'manual':
+        x0, x1 = Parameter('x0'), Parameter('x1')
+        q.ry(0, x0 + theta)
+        q.rx(1, x1)
+        q.cx(0, 1)
+        q.rz(0, phi)
+        q.ry(1, theta)
+        q.set_parameter_roles(input_params=[x0, x1], weight_params=[theta, phi])
+    elif encoding in ('angle', 'zz'):
+        q.ry(0, theta)
+        q.rx(1, phi)
+        q.cx(0, 1)
+        # Declare weight vector order; the encoder supplies all input symbols.
+        q.set_parameter_roles(input_params=[], weight_params=[theta, phi])
+        encoder = AngleEncoder() if encoding == 'angle' else ZZFeatureEncoder(n_repeats=2)
+        q = encoder.to_ansatz(q, num_features=2)
+    else:
+        raise ValueError('encoding must be manual, angle or zz')
     q.set_measurement(readouts=[0, 1])
     q.set_differentiator(method)
     return torch.nn.Sequential(
@@ -35,7 +50,7 @@ def build_model(method):
     )
 
 
-def train_and_restore(method='adjoint', epochs=30, checkpoint=None):
+def train_and_restore(method='adjoint', epochs=30, checkpoint=None, *, encoding='manual'):
     """Return losses after training, validating all gradients and restoration."""
     if epochs <= 0:
         raise ValueError('epochs must be positive')
@@ -44,7 +59,7 @@ def train_and_restore(method='adjoint', epochs=30, checkpoint=None):
     targets = .4 * torch.sin(samples[:, :1]) + .2 * samples[:, 1:]
     loader = DataLoader(TensorDataset(samples, targets), batch_size=12, shuffle=True,
                         generator=torch.Generator().manual_seed(19))
-    model = build_model(method)
+    model = build_model(method, encoding)
     optimizer = torch.optim.Adam(model.parameters(), lr=.04)
     loss_fn = torch.nn.MSELoss()
     with torch.no_grad():
@@ -69,7 +84,7 @@ def train_and_restore(method='adjoint', epochs=30, checkpoint=None):
     def restore(path):
         torch.save({'model': model.state_dict(), 'optimizer': optimizer.state_dict()}, path)
         saved = torch.load(path, map_location='cpu', weights_only=True)
-        restored = build_model(method)
+        restored = build_model(method, encoding)
         restored.load_state_dict(saved['model'])
         restored_optimizer = torch.optim.Adam(restored.parameters(), lr=.04)
         restored_optimizer.load_state_dict(saved['optimizer'])
@@ -99,10 +114,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--method', choices=['adjoint', 'parameter_shift'], default='adjoint')
     parser.add_argument('--epochs', type=int, default=30)
+    parser.add_argument('--encoding', choices=['manual', 'angle', 'zz'], default='manual')
     parser.add_argument('--checkpoint', type=Path, help='Optional checkpoint output path')
     args = parser.parse_args()
-    initial, final = train_and_restore(args.method, args.epochs, args.checkpoint)
-    print(f'{args.method}: MSE {initial:.6f} -> {final:.6f}')
+    initial, final = train_and_restore(args.method, args.epochs, args.checkpoint, encoding=args.encoding)
+    print(f'{args.encoding}, {args.method}: MSE {initial:.6f} -> {final:.6f}')
     print('Finite gradients and model/optimizer restoration verified.')
 
 

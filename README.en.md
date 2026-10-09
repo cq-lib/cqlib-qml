@@ -8,6 +8,8 @@ Quantum layers support explicit input/weight roles, end-to-end gradients and mic
 
 For native PyTorch hybrid training, use `from cqlib_qml.torch import QuantumLayer`. Multidimensional batches, input and quantum weight gradients, and structure-validated `state_dict()` loading are supported. See the [Torch tutorial](docs/tutorials/torch.md) and [runnable training example](examples/torch_hybrid.py).
 
+Angle and ZZ encoders provide `encoder.to_ansatz(body, num_features=...)` to create symbolic inputs and prepend encoding to a trainable circuit. Input gradients can propagate to preceding classical layers. See the [symbolic encoding guide](docs/tutorials/encoder.md#保留输入梯度的符号编码) for contracts and limitations.
+
 ## Installation
 
 Python 3.11 or later and cqlib 2.0.0b3 or later are required.
