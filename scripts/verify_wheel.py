@@ -27,7 +27,9 @@ def main():
                 f'assert not Path(cqlib_qml.__file__).resolve().is_relative_to(Path({str(source / "cqlib_qml")!r})), '
                 '"Expected wheel import, got source checkout"; print(cqlib_qml.__file__)')
         subprocess.run([sys.executable, '-c', code], cwd=root, env=env, check=True)
+        # Examples are checked before packaging and are not included in the wheel.
         subprocess.run([sys.executable, '-m', 'pytest', 'tests', '-q',
+                        '--ignore=tests/test_torch_examples.py',
                         '--import-mode=importlib', '-p', 'no:cacheprovider'], cwd=root, env=env, check=True)
         subprocess.run([sys.executable, 'scripts/smoke_test.py'], cwd=root, env=env, check=True)
 
