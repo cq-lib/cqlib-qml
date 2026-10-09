@@ -25,8 +25,15 @@ Examples:
     >>> circuits = encoder(data)  # Uses 2 qubits
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import numpy as np
-from cqlib.circuit import Circuit
+from cqlib.circuit import Circuit, Parameter
+
+if TYPE_CHECKING:
+    from cqlib_qml.ansatz import Ansatz
 
 
 class AngleEncoder:
@@ -77,6 +84,53 @@ class AngleEncoder:
         if mode not in AngleEncoder.__MODE:
             raise ValueError(f"Angle encoding only supports two modes: 'classical' and 'dense', " f"got '{mode}'.")
         self._mode = mode
+
+    def to_ansatz(self, ansatz: Ansatz, *, num_features: int,
+                  input_prefix: str = "x") -> Ansatz:
+        """Prepend differentiable encoding to a new, independent base Ansatz.
+
+        ``num_features`` must match the source width (two per qubit in dense
+        mode, with an optional final unpaired feature). Input vector order is
+        ``{input_prefix}_0, ...``. Existing weight order, assigned weights,
+        measurement and differentiation configuration are retained; missing
+        weights are not initialized. Source inputs or attached numerical
+        encoders are rejected. Qubit IDs must be a permutation of ``0..Q-1``;
+        source qubit positions map to canonical IDs in the returned object.
+
+        The result starts in training mode and is trainable. Torch ownership
+        and initialization follow the existing QuantumLayer contract.
+
+        Args:
+            ansatz: Source training circuit, without existing input roles.
+            num_features: Positive feature count; classical requires Q,
+                dense requires 2*Q or 2*Q-1 features for Q source qubits.
+            input_prefix: Identifier prefix for generated input symbols.
+
+        Returns:
+            Ansatz: Owned encoding-plus-training circuit with explicit roles.
+
+        Raises:
+            TypeError: Argument types or the differentiator are unsupported.
+            ValueError: Width, roles, qubit IDs or symbol names are incompatible.
+        """
+        from ._symbolic import compose_encoding, positive_integer
+
+        num_features = positive_integer(num_features, "num_features")
+        width = num_features if self._mode == "classical" else (num_features + 1) // 2
+        return compose_encoding(ansatz, num_features=num_features, num_qubits=width,
+                                input_prefix=input_prefix, build=self._build_symbolic)
+
+    def _build_symbolic(self, names):
+        width = len(names) if self._mode == "classical" else (len(names) + 1) // 2
+        circuit = Circuit(width)
+        values = [Parameter(name) for name in names]
+        for i in range(width):
+            if self._mode == "classical":
+                circuit.ry(i, 2 * values[i])
+            else:
+                circuit.ry(i, 2 * values[2 * i])
+                circuit.rz(i, values[2 * i + 1] if 2 * i + 1 < len(values) else 0)
+        return circuit
 
     def __call__(self, data: np.ndarray) -> list:
         """
