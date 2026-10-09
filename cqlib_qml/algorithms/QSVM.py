@@ -30,6 +30,8 @@ Examples:
 """
 
 from cqlib_qml._configuration import same_parameter_value
+from cqlib_qml._state import clone_state
+from copy import copy
 
 import numpy as np
 from typing import Union
@@ -69,6 +71,7 @@ class QSVM(ClassifierMixin, BaseEstimator):
         _svm: Trained SVM classifier.
         _X_fit: Training data used for fitting.
         classes_: Unique class labels.
+        n_features_in_: Number of original input features seen during fitting.
 
     Raises:
         ValueError: If encoder type is not supported.
@@ -134,6 +137,21 @@ class QSVM(ClassifierMixin, BaseEstimator):
     def __sklearn_is_fitted__(self):
         return self._svm is not None and self._X_fit is not None
 
+    def __getstate__(self):
+        state = super().__getstate__().copy()
+        if state['_qkm'] is not None:
+            # Cached native circuits are rebuilt on demand after restoration.
+            state['_qkm'] = copy(state['_qkm'])
+            state['_qkm'].clear_cache()
+        return state
+
+    def _validate_predict_input(self, X):
+        check_is_fitted(self)
+        X = check_array(X)
+        if X.shape[1] != self.n_features_in_:
+            raise ValueError(f'Expected {self.n_features_in_} features, got {X.shape[1]}')
+        return X
+
     def get_params(self, deep=True):
         return {"encoder": self.encoder, "C": self.C,
                 "swap_test": self.swap_test, "probability": self.probability,
@@ -154,8 +172,7 @@ class QSVM(ClassifierMixin, BaseEstimator):
             else:
                 self.svm_kwargs[key] = value
         if changed:
-            self._qkm = self._svm = self._X_fit = None
-            self.__dict__.pop("classes_", None)
+            self.reset()
         return self
 
     def _get_qkm(self) -> QKM:
@@ -204,7 +221,7 @@ class QSVM(ClassifierMixin, BaseEstimator):
         X = X.copy()
 
         # Compute quantum kernel matrix
-        qkm = QKM(encoder=self.encoder, swap_test=self.swap_test)
+        qkm = QKM(encoder=clone_state(self.encoder), swap_test=self.swap_test)
         K_train = qkm.kernel(X)
 
         # Initialize and train SVM with precomputed kernel
@@ -218,6 +235,7 @@ class QSVM(ClassifierMixin, BaseEstimator):
         self._svm = svm
         self._X_fit = X
         self.classes_ = svm.classes_
+        self.n_features_in_ = X.shape[1]
 
         return self
 
@@ -237,8 +255,7 @@ class QSVM(ClassifierMixin, BaseEstimator):
         Examples:
             >>> y_pred = qsvm.predict(X_test)
         """
-        check_is_fitted(self)
-        X = check_array(X)
+        X = self._validate_predict_input(X)
 
         qkm = self._get_qkm()
         K_test = qkm.kernel(X, self._X_fit)
@@ -263,8 +280,7 @@ class QSVM(ClassifierMixin, BaseEstimator):
             >>> qsvm.fit(X_train, y_train)
             >>> y_proba = qsvm.predict_proba(X_test)
         """
-        check_is_fitted(self)
-        X = check_array(X)
+        X = self._validate_predict_input(X)
 
         if not self.probability:
             raise RuntimeError("Probability estimates not available. " "Set probability=True when initializing QSVM.")
@@ -287,8 +303,7 @@ class QSVM(ClassifierMixin, BaseEstimator):
         Examples:
             >>> scores = qsvm.decision_function(X_test)
         """
-        check_is_fitted(self)
-        X = check_array(X)
+        X = self._validate_predict_input(X)
 
         qkm = self._get_qkm()
         K_test = qkm.kernel(X, self._X_fit)
@@ -338,3 +353,5 @@ class QSVM(ClassifierMixin, BaseEstimator):
         self._qkm = None
         self._svm = None
         self._X_fit = None
+        self.__dict__.pop('classes_', None)
+        self.__dict__.pop('n_features_in_', None)

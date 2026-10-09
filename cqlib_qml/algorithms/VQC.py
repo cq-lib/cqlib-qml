@@ -44,6 +44,7 @@ from typing import Union, Optional, List, Dict, Any
 from sklearn.base import BaseEstimator, ClassifierMixin
 from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
 from sklearn.metrics import accuracy_score
+from sklearn.utils.multiclass import check_classification_targets
 
 from cqlib.circuit import Circuit
 from cqlib_qml.ansatz import Ansatz
@@ -53,6 +54,10 @@ from cqlib_qml.loss import BCELoss, MSELoss, SoftmaxCrossEntropy
 from cqlib_qml.optimizer import OptimizerBase, OptimizerInitializer
 from cqlib_qml._state import (FORMAT_VERSION, clone_state, make_rng, rng_from_state, atomic_save,
                               validate_version, require_clean_gradients)
+from cqlib_qml._serialization import register_native_reducers
+
+
+register_native_reducers()
 
 
 class VQC(ClassifierMixin, BaseEstimator):
@@ -367,6 +372,7 @@ class VQC(ClassifierMixin, BaseEstimator):
 
     def _fit_in_place(self, X, y, *, max_steps=None):
         X, raw_y = check_X_y(X, y)
+        check_classification_targets(raw_y)
         classes, y = np.unique(raw_y, return_inverse=True)
         count = len(classes)
         readouts = self.readouts if self.readouts is not None else [0]
