@@ -636,23 +636,29 @@ class VQC(ClassifierMixin, BaseEstimator):
         circuits = self._encode(X)
         expectations = self._qnn.forward(circuits, trainable=False)
 
-        if self.loss == "MSE":
-            if (len(self._classes) if self._classes is not None else self.n_classes) > 2:
-                # Softmax transformation
-                exp_vals = np.exp(expectations - np.max(expectations, axis=1, keepdims=True))
-                return exp_vals / np.sum(exp_vals, axis=1, keepdims=True)
-            else:
-                # Binary: convert to probability
-                prob_class1 = (1 - expectations.flatten()) / 2
-                prob_class0 = 1 - prob_class1
-                return np.column_stack([prob_class0, prob_class1])
-        elif self.loss == "BCE":
-            prob_class1 = (1 - expectations.flatten()) / 2
-            prob_class0 = 1 - prob_class1
-            return np.column_stack([prob_class0, prob_class1])
-        else:  # CrossEntropy
+        if self.loss == "CrossEntropy" or (
+            self.loss == "MSE"
+            and (len(self._classes) if self._classes is not None else self.n_classes) > 2
+        ):
             exp_vals = np.exp(expectations - np.max(expectations, axis=1, keepdims=True))
             return exp_vals / np.sum(exp_vals, axis=1, keepdims=True)
+
+        # Binary probabilities derive from an expectation in [-1, 1]. Quantum
+        # simulation can exceed those endpoints by a few rounding ulps.
+        if np.iscomplexobj(expectations) or not np.all(np.isfinite(expectations)):
+            raise ValueError("VQC expectations must be finite and real")
+        dtype = np.asarray(expectations).dtype
+        eps = (
+            np.finfo(dtype).eps
+            if np.issubdtype(dtype, np.floating)
+            else np.finfo(float).eps
+        )
+        tolerance = 64 * eps
+        if np.any(expectations < -1 - tolerance) or np.any(expectations > 1 + tolerance):
+            raise ValueError("VQC expectations must be in [-1, 1] apart from roundoff")
+        prob_class1 = np.clip((1 - expectations.flatten()) / 2, 0.0, 1.0)
+        prob_class0 = 1 - prob_class1
+        return np.column_stack([prob_class0, prob_class1])
 
     def score(self, X: np.ndarray, y: np.ndarray) -> float:
         """
