@@ -66,6 +66,31 @@ class TestBCELoss:
         grads = loss_fn.grads()
         assert grads.shape == pred.shape
 
+    @pytest.mark.parametrize('target', [0.0, 1.0])
+    @pytest.mark.parametrize('pred', [-1e-15, 1 + 1e-15])
+    def test_roundoff_outside_probability_range_is_finite(self, pred, target):
+        loss_fn = BCELoss()
+        loss = loss_fn(np.array([[pred]]), np.array([[target]]))
+        assert np.isfinite(loss)
+        assert np.all(np.isfinite(loss_fn.grads()))
+
+    @pytest.mark.parametrize('pred', [-0.01, 1.01, np.nan, np.inf])
+    def test_invalid_probability_is_rejected(self, pred):
+        loss_fn = BCELoss()
+        with pytest.raises(ValueError, match='BCE predictions'):
+            loss_fn(np.array([[pred]]), np.array([[0.0]]))
+
+    @pytest.mark.parametrize('pred,target,expected_sign', [
+        (0.0, 1.0, -1.0),
+        (1.0, 0.0, 1.0),
+    ])
+    def test_exact_endpoint_keeps_nonzero_gradient(self, pred, target, expected_sign):
+        loss_fn = BCELoss()
+        loss_fn(np.array([[pred]]), np.array([[target]]))
+        assert loss_fn.grads()[0, 0] == pytest.approx(
+            expected_sign / np.finfo(float).eps
+        )
+
 
 class TestCrossEntropy:
     def test_forward(self):

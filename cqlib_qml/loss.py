@@ -251,19 +251,46 @@ class BCELoss(LossFun):
         """Initialize a BCELoss instance."""
         super().__init__()
 
+    def __call__(self, pred: np.ndarray, target: np.ndarray):
+        """Allow only floating-point roundoff outside the probability range."""
+        if np.iscomplexobj(pred) or not np.all(np.isfinite(pred)):
+            raise ValueError("BCE predictions must be finite real probabilities")
+        dtype = np.asarray(pred).dtype
+        eps = (
+            np.finfo(dtype).eps
+            if np.issubdtype(dtype, np.floating)
+            else np.finfo(float).eps
+        )
+        tolerance = 64 * eps
+        if np.any(pred < -tolerance) or np.any(pred > 1 + tolerance):
+            raise ValueError("BCE predictions must be in [0, 1] apart from roundoff")
+        return super().__call__(pred, target)
+
     def _get_loss(self, pred: np.ndarray, target: np.ndarray):
         """
         Compute the binary cross entropy loss.
 
         Args:
-            pred (np.ndarray): Predicted probabilities in (0, 1).
+            pred (np.ndarray): Predicted probabilities in [0, 1], allowing
+                floating-point roundoff at the boundaries.
             target (np.ndarray): Target values in {0, 1}.
 
         Returns:
             float: BCE loss value.
         """
         eps = np.finfo(float).eps
-        loss = np.clip(-target * np.log(pred + eps) - (1 - target) * np.log(1 - pred + eps), 0, 100)
+        # Quantum expectation values can round slightly beyond +/-1. Bound the
+        # probability before either logarithm; clipping the loss afterwards
+        # cannot recover a NaN from log(negative value).
+        # Keep the original gradient at exact 0 and 1; np.clip would also
+        # suppress it at those valid endpoints.
+        bounded_pred = np.where(pred < 0.0, 0.0, np.where(pred > 1.0, 1.0, pred))
+        loss = np.clip(
+            -target * np.log(bounded_pred + eps)
+            - (1 - target) * np.log(1 - bounded_pred + eps),
+            0,
+            100,
+        )
         return np.mean(loss)
 
     def __str__(self):
