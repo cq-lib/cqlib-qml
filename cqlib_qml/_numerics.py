@@ -29,3 +29,19 @@ def stable_norm(vector):
     """Compute a Euclidean norm without squaring unscaled components."""
     scaled, scale = scaled_vector(vector)
     return scale * np.linalg.norm(scaled)
+
+
+def binary_expectation_probability(expectations):
+    """Convert binary expectations to class-1 probabilities.
+
+    Permit only dtype-scale roundoff beyond [-1, 1]. The returned values are
+    deliberately not clipped, so BCE can retain its boundary gradient.
+    """
+    if np.iscomplexobj(expectations) or not np.all(np.isfinite(expectations)):
+        raise ValueError("Binary expectations must be finite and real")
+    dtype = np.asarray(expectations).dtype
+    eps = np.finfo(dtype).eps if np.issubdtype(dtype, np.floating) else np.finfo(float).eps
+    tolerance = 64 * eps
+    if np.any(expectations < -1 - tolerance) or np.any(expectations > 1 + tolerance):
+        raise ValueError("Binary expectations must be in [-1, 1] apart from roundoff")
+    return (1 - expectations) / 2

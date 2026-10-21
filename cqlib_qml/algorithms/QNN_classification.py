@@ -26,6 +26,7 @@ import tqdm
 import yaml
 import numpy as np
 from typing import Optional, Any
+from cqlib_qml._numerics import binary_expectation_probability
 
 from cqlib_qml.data.data_preprocess import get_mnist_dataloader
 from cqlib_qml.models import QNN
@@ -92,7 +93,7 @@ def train(
 
         if isinstance(loss_fun, BCELoss):
             y_true = y_train.reshape(expectations.shape)
-            y_pred = (1 - expectations) / 2.0
+            y_pred = binary_expectation_probability(expectations)
             dpred = -0.5
         else:
             # HingeLoss and MSELoss use labels in {-1, 1}.
@@ -155,7 +156,7 @@ def validate(ep: int, net: QNN, test_loader, loss_fun, batch_size: int, tb: Opti
 
         if isinstance(loss_fun, BCELoss):
             y_true_val = y_test.reshape(expectations_val.shape)
-            y_pred_val = (1 - expectations_val) / 2.0
+            y_pred_val = binary_expectation_probability(expectations_val)
         else:
             y_true_val = (2 * y_test - 1.0).reshape(expectations_val.shape)
             y_pred_val = -expectations_val

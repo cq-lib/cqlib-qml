@@ -278,19 +278,23 @@ class BCELoss(LossFun):
         Returns:
             float: BCE loss value.
         """
-        eps = np.finfo(float).eps
-        # Quantum expectation values can round slightly beyond +/-1. Bound the
-        # probability before either logarithm; clipping the loss afterwards
-        # cannot recover a NaN from log(negative value).
-        # Keep the original gradient at exact 0 and 1; np.clip would also
-        # suppress it at those valid endpoints.
+        dtype = pred.dtype
+        eps = np.finfo(dtype).eps if np.issubdtype(dtype, np.floating) else np.finfo(float).eps
+        # Evaluate the logarithms at the nearest valid endpoint, then extend
+        # the loss by its endpoint tangent. This keeps the wrong-label gradient
+        # active for tolerated roundoff outside [0, 1].
         bounded_pred = np.where(pred < 0.0, 0.0, np.where(pred > 1.0, 1.0, pred))
-        loss = np.clip(
+        base_loss = (
             -target * np.log(bounded_pred + eps)
-            - (1 - target) * np.log(1 - bounded_pred + eps),
-            0,
-            100,
+            - (1 - target) * np.log(1 - bounded_pred + eps)
         )
+        lower_slope = (1 - target) / (1 + eps) - target / eps
+        upper_slope = (1 - target) / eps - target / (1 + eps)
+        loss = base_loss + np.where(pred < 0, pred * lower_slope, 0)
+        loss = loss + np.where(pred > 1, (pred - 1) * upper_slope, 0)
+        # Valid probabilities never reach 100; an upper cap would erase the
+        # gradient for a wrong-label, slightly out-of-range prediction.
+        loss = np.maximum(loss, 0)
         return np.mean(loss)
 
     def __str__(self):

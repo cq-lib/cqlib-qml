@@ -169,6 +169,20 @@ def test_qnn_bce_roundoff_at_expectation_boundary_stays_finite(tmp_path):
     assert accuracy == 1.
 
 
+def test_qnn_bce_rejects_expectations_outside_roundoff(tmp_path):
+    from cqlib_qml.algorithms import QNN_classification
+
+    class Probe:
+        def forward(self, expectations, trainable=True):
+            return expectations.reshape(-1, 1)
+
+    batches = [(np.array([1 + 2e-14]), np.array([0]))]
+    with pytest.raises(ValueError, match='expectations'):
+        QNN_classification.train(0, 0, Probe(), batches, BCELoss(), str(tmp_path), 2)
+    with pytest.raises(ValueError, match='expectations'):
+        QNN_classification.validate(0, Probe(), batches, BCELoss(), 1)
+
+
 @pytest.mark.parametrize('retain_derived', [False, True])
 @pytest.mark.parametrize('value,batched', [
     (np.nan, False), (np.inf, False), (-np.inf, True),

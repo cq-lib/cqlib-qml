@@ -91,6 +91,27 @@ class TestBCELoss:
             expected_sign / np.finfo(float).eps
         )
 
+    @pytest.mark.parametrize('dtype', [np.float32, np.float64])
+    @pytest.mark.parametrize('ulps', [1, 64])
+    @pytest.mark.parametrize('side,target,expected_sign', [
+        ('lower', 1.0, -1.0),
+        ('upper', 0.0, 1.0),
+    ])
+    def test_wrong_label_roundoff_keeps_endpoint_gradient(self, dtype, ulps, side, target, expected_sign):
+        eps = np.finfo(dtype).eps
+        value = -ulps * eps if side == 'lower' else 1 + ulps * eps
+        prediction = np.array([[value]], dtype=dtype)
+        loss_fn = BCELoss()
+        loss = loss_fn(prediction, np.array([[target]], dtype=dtype))
+        assert np.isfinite(loss)
+        assert loss_fn.grads()[0, 0] == pytest.approx(expected_sign / eps, rel=1e-5)
+
+    @pytest.mark.parametrize('pred,target', [(-1e-15, 0.0), (1 + 1e-15, 1.0)])
+    def test_correct_label_roundoff_has_zero_gradient(self, pred, target):
+        loss_fn = BCELoss()
+        loss_fn(np.array([[pred]]), np.array([[target]]))
+        assert loss_fn.grads()[0, 0] == pytest.approx(0.0)
+
 
 class TestCrossEntropy:
     def test_forward(self):

@@ -60,6 +60,18 @@ def test_vqc_binary_predict_proba_rejects_invalid_expectation(loss, expectation,
         model.predict_proba(NEW_X)
 
 
+def test_vqc_bce_training_and_prediction_share_expectation_bound(monkeypatch):
+    model = classifier('vqc').fit(X, Y)
+    outside = np.array([[1 + 2e-14], [-1 - 2e-14]])
+    with pytest.raises(ValueError, match='expectations'):
+        model._prepare_for_loss(outside, np.array([0, 1]))
+    monkeypatch.setattr(model._qnn, 'forward', lambda circuits, trainable=False: outside)
+    with pytest.raises(ValueError, match='expectations'):
+        model.predict_proba(NEW_X)
+    with pytest.raises(ValueError, match='expectations'):
+        model.predict(NEW_X)
+
+
 @pytest.mark.parametrize('fitted', [False, True])
 def test_vqc_rejects_continuous_targets_without_changing_state(fitted):
     model = classifier('vqc')
