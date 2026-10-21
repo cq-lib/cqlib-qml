@@ -1,6 +1,8 @@
 import numpy as np
 import pytest
+from autograd import grad
 
+from cqlib_qml._numerics import binary_expectation_probability
 from cqlib_qml.loss import (
     HingeLoss,
     MSELoss,
@@ -8,6 +10,15 @@ from cqlib_qml.loss import (
     CrossEntropy,
     SoftmaxCrossEntropy,
 )
+
+
+@pytest.mark.parametrize("expectation, expected", [
+    (0.2, 0.4),
+    (0, 0.5),
+    (-1.0, 1.0),
+])
+def test_binary_expectation_probability_accepts_python_scalar(expectation, expected):
+    assert binary_expectation_probability(expectation) == pytest.approx(expected)
 
 
 class TestHingeLoss:
@@ -50,6 +61,31 @@ class TestMSELoss:
 
 
 class TestBCELoss:
+    @pytest.mark.parametrize("dtype", [np.float32, np.float64])
+    def test_expectation_roundoff_supports_autograd_grad(self, dtype):
+        eps = np.finfo(dtype).eps
+        expectations = np.array([[1 + eps]], dtype=dtype)
+        target = np.array([[1.0]], dtype=dtype)
+
+        actual = grad(
+            lambda values: BCELoss()(
+                binary_expectation_probability(values), target
+            )
+        )(expectations)
+
+        np.testing.assert_allclose(actual, [[0.5 / eps]], rtol=1e-6)
+
+    @pytest.mark.parametrize("dtype", [np.float32, np.float64])
+    def test_callable_supports_autograd_grad(self, dtype):
+        pred = np.array([[0.2, 0.8]], dtype=dtype)
+        target = np.array([[0.0, 1.0]], dtype=dtype)
+
+        actual = grad(lambda p: BCELoss()(p, target))(pred)
+
+        # Mean BCE: dL/dp = (p - target) / (p * (1 - p) * N).
+        expected = np.array([[0.625, -0.625]], dtype=dtype)
+        np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=0)
+
     def test_forward(self):
         loss_fn = BCELoss()
         pred = np.array([[0.9, 0.1]])

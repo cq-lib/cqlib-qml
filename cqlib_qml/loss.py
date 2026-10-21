@@ -258,7 +258,7 @@ class BCELoss(LossFun):
         if (np.iscomplexobj(target) or not np.all(np.isfinite(target))
                 or np.any(target < 0) or np.any(target > 1)):
             raise ValueError("BCE targets must be finite real values in [0, 1]")
-        dtype = np.asarray(pred).dtype
+        dtype = pred.dtype
         eps = (
             np.finfo(dtype).eps
             if np.issubdtype(dtype, np.floating)

@@ -39,7 +39,9 @@ def binary_expectation_probability(expectations):
     """
     if np.iscomplexobj(expectations) or not np.all(np.isfinite(expectations)):
         raise ValueError("Binary expectations must be finite and real")
-    dtype = np.asarray(expectations).dtype
+    dtype = getattr(expectations, "dtype", None)
+    if dtype is None:
+        dtype = np.asarray(expectations).dtype
     eps = np.finfo(dtype).eps if np.issubdtype(dtype, np.floating) else np.finfo(float).eps
     tolerance = 64 * eps
     if np.any(expectations < -1 - tolerance) or np.any(expectations > 1 + tolerance):
