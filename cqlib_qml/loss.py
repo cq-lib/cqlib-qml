@@ -231,7 +231,7 @@ class BCELoss(LossFun):
     L_BCE(y) = -(1/N) * (y · log(ŷ) + (1-y) · log(1-ŷ))
 
     The BCE loss is used for binary classification tasks where targets
-    are in {0, 1}.
+    are in [0, 1], including optional soft targets.
 
     Args:
         None
@@ -252,9 +252,12 @@ class BCELoss(LossFun):
         super().__init__()
 
     def __call__(self, pred: np.ndarray, target: np.ndarray):
-        """Allow only floating-point roundoff outside the probability range."""
+        """Validate targets and allow only roundoff outside the probability range."""
         if np.iscomplexobj(pred) or not np.all(np.isfinite(pred)):
             raise ValueError("BCE predictions must be finite real probabilities")
+        if (np.iscomplexobj(target) or not np.all(np.isfinite(target))
+                or np.any(target < 0) or np.any(target > 1)):
+            raise ValueError("BCE targets must be finite real values in [0, 1]")
         dtype = np.asarray(pred).dtype
         eps = (
             np.finfo(dtype).eps
@@ -273,7 +276,7 @@ class BCELoss(LossFun):
         Args:
             pred (np.ndarray): Predicted probabilities in [0, 1], allowing
                 floating-point roundoff at the boundaries.
-            target (np.ndarray): Target values in {0, 1}.
+            target (np.ndarray): Target values in [0, 1].
 
         Returns:
             float: BCE loss value.

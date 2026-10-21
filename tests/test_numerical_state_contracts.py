@@ -183,6 +183,21 @@ def test_qnn_bce_rejects_expectations_outside_roundoff(tmp_path):
         QNN_classification.validate(0, Probe(), batches, BCELoss(), 1)
 
 
+@pytest.mark.parametrize('label', [0.5, 2.0, np.nan])
+def test_qnn_bce_rejects_nonbinary_labels(tmp_path, label):
+    from cqlib_qml.algorithms import QNN_classification
+
+    class Probe:
+        def forward(self, samples, trainable=True):
+            return samples.reshape(-1, 1)
+
+    batches = [(np.array([0.6]), np.array([label]))]
+    with pytest.raises(ValueError, match='binary labels'):
+        QNN_classification.train(0, 0, Probe(), batches, BCELoss(), str(tmp_path), 2)
+    with pytest.raises(ValueError, match='binary labels'):
+        QNN_classification.validate(0, Probe(), batches, BCELoss(), 1)
+
+
 @pytest.mark.parametrize('retain_derived', [False, True])
 @pytest.mark.parametrize('value,batched', [
     (np.nan, False), (np.inf, False), (-np.inf, True),

@@ -43,6 +43,14 @@ except ImportError:
     TENSORBOARD_AVAILABLE = False
 
 
+def _validate_binary_labels(labels):
+    """Reject non-binary classification labels before quantum computation."""
+    labels = np.asarray(labels)
+    if (np.iscomplexobj(labels) or not np.all(np.isfinite(labels))
+            or np.any((labels != 0) & (labels != 1))):
+        raise ValueError("QNN classification requires finite binary labels {0, 1}")
+
+
 def train(
     ep: int,
     it_start: int,
@@ -88,6 +96,9 @@ def train(
         if it < it_start:
             continue
         it_start = 0
+
+        if isinstance(loss_fun, BCELoss):
+            _validate_binary_labels(y_train)
 
         expectations = net.forward(x_train)  # Shape: (batch_size, 1)
 
@@ -152,6 +163,8 @@ def validate(ep: int, net: QNN, test_loader, loss_fun, batch_size: int, tb: Opti
     total_correct = 0
 
     for it, (x_test, y_test) in enumerate(loader_val):
+        if isinstance(loss_fun, BCELoss):
+            _validate_binary_labels(y_test)
         expectations_val = net.forward(x_test, trainable=False)
 
         if isinstance(loss_fun, BCELoss):

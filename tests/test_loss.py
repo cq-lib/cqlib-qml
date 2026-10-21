@@ -66,6 +66,23 @@ class TestBCELoss:
         grads = loss_fn.grads()
         assert grads.shape == pred.shape
 
+    @pytest.mark.parametrize('target', [-0.1, 2.0, np.nan, np.inf, 1j])
+    def test_invalid_target_is_rejected_without_changing_stored_batch(self, target):
+        loss_fn = BCELoss()
+        pred = np.array([[0.9]])
+        valid_target = np.array([[1.0]])
+        loss_fn(pred, valid_target)
+        with pytest.raises(ValueError, match='BCE targets'):
+            loss_fn(pred, np.array([[target]]))
+        assert loss_fn._pred is pred
+        assert loss_fn._target is valid_target
+
+    def test_soft_targets_in_unit_interval_remain_supported(self):
+        loss_fn = BCELoss()
+        loss = loss_fn(np.array([[0.9]]), np.array([[0.25]]))
+        assert np.isfinite(loss)
+        assert np.isfinite(loss_fn.grads()).all()
+
     @pytest.mark.parametrize('target', [0.0, 1.0])
     @pytest.mark.parametrize('pred', [-1e-15, 1 + 1e-15])
     def test_roundoff_outside_probability_range_is_finite(self, pred, target):
