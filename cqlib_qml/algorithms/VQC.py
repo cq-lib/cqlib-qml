@@ -36,6 +36,7 @@ Examples:
 """
 
 from cqlib_qml._configuration import same_parameter_value
+from cqlib_qml._numerics import binary_expectation_probability
 
 import numpy as np
 from numbers import Integral
@@ -294,7 +295,7 @@ class VQC(ClassifierMixin, BaseEstimator):
         elif self.loss == "BCE":
             # Binary: convert to {0, 1}
             y_true = y.reshape(expectations.shape)
-            y_pred = (1 - expectations) / 2
+            y_pred = binary_expectation_probability(expectations)
         else:  # CrossEntropy
             # Multi-class: one-hot encoding
             n_samples = len(y)
@@ -608,10 +609,10 @@ class VQC(ClassifierMixin, BaseEstimator):
             if (len(self._classes) if self._classes is not None else self.n_classes) > 2:
                 return self._classes[expectations.argmax(axis=1)]
             else:
-                probabilities = (1 - expectations) / 2
+                probabilities = binary_expectation_probability(expectations)
                 return self._classes[(probabilities.flatten() > 0.5).astype(int)]
         elif self.loss == "BCE":
-            probabilities = (1 - expectations) / 2
+            probabilities = binary_expectation_probability(expectations)
             return self._classes[(probabilities.flatten() > 0.5).astype(int)]
         else:  # CrossEntropy
             return self._classes[expectations.argmax(axis=1)]
@@ -636,23 +637,16 @@ class VQC(ClassifierMixin, BaseEstimator):
         circuits = self._encode(X)
         expectations = self._qnn.forward(circuits, trainable=False)
 
-        if self.loss == "MSE":
-            if (len(self._classes) if self._classes is not None else self.n_classes) > 2:
-                # Softmax transformation
-                exp_vals = np.exp(expectations - np.max(expectations, axis=1, keepdims=True))
-                return exp_vals / np.sum(exp_vals, axis=1, keepdims=True)
-            else:
-                # Binary: convert to probability
-                prob_class1 = (1 - expectations.flatten()) / 2
-                prob_class0 = 1 - prob_class1
-                return np.column_stack([prob_class0, prob_class1])
-        elif self.loss == "BCE":
-            prob_class1 = (1 - expectations.flatten()) / 2
-            prob_class0 = 1 - prob_class1
-            return np.column_stack([prob_class0, prob_class1])
-        else:  # CrossEntropy
+        if self.loss == "CrossEntropy" or (
+            self.loss == "MSE"
+            and (len(self._classes) if self._classes is not None else self.n_classes) > 2
+        ):
             exp_vals = np.exp(expectations - np.max(expectations, axis=1, keepdims=True))
             return exp_vals / np.sum(exp_vals, axis=1, keepdims=True)
+
+        prob_class1 = np.clip(binary_expectation_probability(expectations).flatten(), 0.0, 1.0)
+        prob_class0 = 1 - prob_class1
+        return np.column_stack([prob_class0, prob_class1])
 
     def score(self, X: np.ndarray, y: np.ndarray) -> float:
         """

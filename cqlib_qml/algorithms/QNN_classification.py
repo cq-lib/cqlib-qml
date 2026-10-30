@@ -26,6 +26,7 @@ import tqdm
 import yaml
 import numpy as np
 from typing import Optional, Any
+from cqlib_qml._numerics import binary_expectation_probability
 
 from cqlib_qml.data.data_preprocess import get_mnist_dataloader
 from cqlib_qml.models import QNN
@@ -40,6 +41,14 @@ try:
     TENSORBOARD_AVAILABLE = True
 except ImportError:
     TENSORBOARD_AVAILABLE = False
+
+
+def _validate_binary_labels(labels):
+    """Reject non-binary classification labels before quantum computation."""
+    labels = np.asarray(labels)
+    if (np.iscomplexobj(labels) or not np.all(np.isfinite(labels))
+            or np.any((labels != 0) & (labels != 1))):
+        raise ValueError("QNN classification requires finite binary labels {0, 1}")
 
 
 def train(
@@ -88,11 +97,14 @@ def train(
             continue
         it_start = 0
 
+        if isinstance(loss_fun, BCELoss):
+            _validate_binary_labels(y_train)
+
         expectations = net.forward(x_train)  # Shape: (batch_size, 1)
 
         if isinstance(loss_fun, BCELoss):
             y_true = y_train.reshape(expectations.shape)
-            y_pred = (1 - expectations) / 2.0
+            y_pred = binary_expectation_probability(expectations)
             dpred = -0.5
         else:
             # HingeLoss and MSELoss use labels in {-1, 1}.
@@ -151,11 +163,13 @@ def validate(ep: int, net: QNN, test_loader, loss_fun, batch_size: int, tb: Opti
     total_correct = 0
 
     for it, (x_test, y_test) in enumerate(loader_val):
+        if isinstance(loss_fun, BCELoss):
+            _validate_binary_labels(y_test)
         expectations_val = net.forward(x_test, trainable=False)
 
         if isinstance(loss_fun, BCELoss):
             y_true_val = y_test.reshape(expectations_val.shape)
-            y_pred_val = (1 - expectations_val) / 2.0
+            y_pred_val = binary_expectation_probability(expectations_val)
         else:
             y_true_val = (2 * y_test - 1.0).reshape(expectations_val.shape)
             y_pred_val = -expectations_val

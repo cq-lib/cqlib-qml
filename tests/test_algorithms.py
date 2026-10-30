@@ -482,6 +482,18 @@ class TestVQC:
         y_pred, y_true = vqc._prepare_for_loss(expectations, y)
         assert y_pred.shape == y_true.shape
 
+    def test_bce_loss_roundoff_at_expectation_boundary(self):
+        ansatz = HEAnsatz(n_qubits=2, d=1, layers=["RY"])
+        encoder = AngleEncoder(mode="classical")
+        vqc = VQC(ansatz=ansatz, encoder=encoder, readouts=[0], loss="BCE")
+
+        expectations = np.array([[1 + 2e-15], [-1 - 2e-15]])
+        predictions, targets = vqc._prepare_for_loss(expectations, np.array([0, 1]))
+        loss_fn = vqc._get_loss_fn()
+
+        assert np.isfinite(loss_fn(predictions, targets))
+        assert np.all(np.isfinite(loss_fn.grads(-0.5)))
+
     def test_fit_updates_quantum_parameters(self):
         ansatz = HEAnsatz(2, 1, ["RY", "CX"])
         initial = dict(zip(ansatz.symbols, [0.3, 0.7]))

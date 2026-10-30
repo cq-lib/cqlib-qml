@@ -29,11 +29,47 @@ Y = np.array(['left', 'left', 'left', 'right', 'right', 'right'])
 NEW_X = np.array([[.15, .25], [.75, .85]])
 
 
-def classifier(kind):
+def classifier(kind, loss='BCE'):
     if kind == 'qsvm':
         return QSVM(AngleEncoder(), random_state=7)
     return VQC(HEAnsatz(2, d=1, layers=['RY', 'CX']), AngleEncoder(),
-               loss='BCE', epochs=2, batch_size=2, verbose=False, random_state=7)
+               loss=loss, epochs=2, batch_size=2, verbose=False, random_state=7)
+
+
+@pytest.mark.parametrize('loss', ['BCE', 'MSE'])
+def test_vqc_binary_predict_proba_bounds_roundoff(loss, monkeypatch):
+    model = classifier('vqc', loss=loss).fit(X, Y)
+    expectations = np.array([[1 + 2e-15], [-1 - 2e-15]])
+    monkeypatch.setattr(model._qnn, 'forward',
+                        lambda circuits, trainable=False: expectations)
+
+    probabilities = model.predict_proba(NEW_X)
+
+    np.testing.assert_array_equal(probabilities, [[1., 0.], [0., 1.]])
+    np.testing.assert_array_equal(probabilities.sum(axis=1), [1., 1.])
+
+
+@pytest.mark.parametrize('loss', ['BCE', 'MSE'])
+@pytest.mark.parametrize('expectation', [1.01, -1.01, np.nan, np.inf])
+def test_vqc_binary_predict_proba_rejects_invalid_expectation(loss, expectation, monkeypatch):
+    model = classifier('vqc', loss=loss).fit(X, Y)
+    monkeypatch.setattr(model._qnn, 'forward',
+                        lambda circuits, trainable=False: np.full((len(circuits), 1), expectation))
+
+    with pytest.raises(ValueError, match='expectations'):
+        model.predict_proba(NEW_X)
+
+
+def test_vqc_bce_training_and_prediction_share_expectation_bound(monkeypatch):
+    model = classifier('vqc').fit(X, Y)
+    outside = np.array([[1 + 2e-14], [-1 - 2e-14]])
+    with pytest.raises(ValueError, match='expectations'):
+        model._prepare_for_loss(outside, np.array([0, 1]))
+    monkeypatch.setattr(model._qnn, 'forward', lambda circuits, trainable=False: outside)
+    with pytest.raises(ValueError, match='expectations'):
+        model.predict_proba(NEW_X)
+    with pytest.raises(ValueError, match='expectations'):
+        model.predict(NEW_X)
 
 
 @pytest.mark.parametrize('fitted', [False, True])

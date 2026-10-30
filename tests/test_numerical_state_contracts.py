@@ -139,6 +139,65 @@ def test_qnn_bce_training_matches_analytic_parameter_update(tmp_path):
     assert accuracy == 1.
 
 
+def test_qnn_bce_roundoff_at_expectation_boundary_stays_finite(tmp_path):
+    from cqlib_qml.algorithms import QNN_classification
+
+    class Probe:
+        def __init__(self):
+            self.loss = None
+            self.gradient = None
+
+        def forward(self, expectations, trainable=True):
+            return expectations.reshape(-1, 1)
+
+        def backward(self, gradient):
+            self.gradient = gradient.copy()
+
+        def update(self, cur_loss):
+            self.loss = cur_loss
+
+        def zero_grad(self):
+            pass
+
+    model = Probe()
+    batches = [(np.array([1 + 2e-15, -1 - 2e-15]), np.array([0, 1]))]
+    QNN_classification.train(0, 0, model, batches, BCELoss(), str(tmp_path), 2)
+    assert np.isfinite(model.loss)
+    assert np.all(np.isfinite(model.gradient))
+    validation_loss, accuracy = QNN_classification.validate(0, model, batches, BCELoss(), 2)
+    assert np.isfinite(validation_loss)
+    assert accuracy == 1.
+
+
+def test_qnn_bce_rejects_expectations_outside_roundoff(tmp_path):
+    from cqlib_qml.algorithms import QNN_classification
+
+    class Probe:
+        def forward(self, expectations, trainable=True):
+            return expectations.reshape(-1, 1)
+
+    batches = [(np.array([1 + 2e-14]), np.array([0]))]
+    with pytest.raises(ValueError, match='expectations'):
+        QNN_classification.train(0, 0, Probe(), batches, BCELoss(), str(tmp_path), 2)
+    with pytest.raises(ValueError, match='expectations'):
+        QNN_classification.validate(0, Probe(), batches, BCELoss(), 1)
+
+
+@pytest.mark.parametrize('label', [0.5, 2.0, np.nan])
+def test_qnn_bce_rejects_nonbinary_labels(tmp_path, label):
+    from cqlib_qml.algorithms import QNN_classification
+
+    class Probe:
+        def forward(self, samples, trainable=True):
+            return samples.reshape(-1, 1)
+
+    batches = [(np.array([0.6]), np.array([label]))]
+    with pytest.raises(ValueError, match='binary labels'):
+        QNN_classification.train(0, 0, Probe(), batches, BCELoss(), str(tmp_path), 2)
+    with pytest.raises(ValueError, match='binary labels'):
+        QNN_classification.validate(0, Probe(), batches, BCELoss(), 1)
+
+
 @pytest.mark.parametrize('retain_derived', [False, True])
 @pytest.mark.parametrize('value,batched', [
     (np.nan, False), (np.inf, False), (-np.inf, True),

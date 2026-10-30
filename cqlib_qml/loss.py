@@ -231,7 +231,7 @@ class BCELoss(LossFun):
     L_BCE(y) = -(1/N) * (y · log(ŷ) + (1-y) · log(1-ŷ))
 
     The BCE loss is used for binary classification tasks where targets
-    are in {0, 1}.
+    are in [0, 1], including optional soft targets.
 
     Args:
         None
@@ -251,19 +251,53 @@ class BCELoss(LossFun):
         """Initialize a BCELoss instance."""
         super().__init__()
 
+    def __call__(self, pred: np.ndarray, target: np.ndarray):
+        """Validate targets and allow only roundoff outside the probability range."""
+        if np.iscomplexobj(pred) or not np.all(np.isfinite(pred)):
+            raise ValueError("BCE predictions must be finite real probabilities")
+        if (np.iscomplexobj(target) or not np.all(np.isfinite(target))
+                or np.any(target < 0) or np.any(target > 1)):
+            raise ValueError("BCE targets must be finite real values in [0, 1]")
+        dtype = pred.dtype
+        eps = (
+            np.finfo(dtype).eps
+            if np.issubdtype(dtype, np.floating)
+            else np.finfo(float).eps
+        )
+        tolerance = 64 * eps
+        if np.any(pred < -tolerance) or np.any(pred > 1 + tolerance):
+            raise ValueError("BCE predictions must be in [0, 1] apart from roundoff")
+        return super().__call__(pred, target)
+
     def _get_loss(self, pred: np.ndarray, target: np.ndarray):
         """
         Compute the binary cross entropy loss.
 
         Args:
-            pred (np.ndarray): Predicted probabilities in (0, 1).
-            target (np.ndarray): Target values in {0, 1}.
+            pred (np.ndarray): Predicted probabilities in [0, 1], allowing
+                floating-point roundoff at the boundaries.
+            target (np.ndarray): Target values in [0, 1].
 
         Returns:
             float: BCE loss value.
         """
-        eps = np.finfo(float).eps
-        loss = np.clip(-target * np.log(pred + eps) - (1 - target) * np.log(1 - pred + eps), 0, 100)
+        dtype = pred.dtype
+        eps = np.finfo(dtype).eps if np.issubdtype(dtype, np.floating) else np.finfo(float).eps
+        # Evaluate the logarithms at the nearest valid endpoint, then extend
+        # the loss by its endpoint tangent. This keeps the wrong-label gradient
+        # active for tolerated roundoff outside [0, 1].
+        bounded_pred = np.where(pred < 0.0, 0.0, np.where(pred > 1.0, 1.0, pred))
+        base_loss = (
+            -target * np.log(bounded_pred + eps)
+            - (1 - target) * np.log(1 - bounded_pred + eps)
+        )
+        lower_slope = (1 - target) / (1 + eps) - target / eps
+        upper_slope = (1 - target) / eps - target / (1 + eps)
+        loss = base_loss + np.where(pred < 0, pred * lower_slope, 0)
+        loss = loss + np.where(pred > 1, (pred - 1) * upper_slope, 0)
+        # Valid probabilities never reach 100; an upper cap would erase the
+        # gradient for a wrong-label, slightly out-of-range prediction.
+        loss = np.maximum(loss, 0)
         return np.mean(loss)
 
     def __str__(self):
