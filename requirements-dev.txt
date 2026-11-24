@@ -1,7 +1,7 @@
 build>=1.2.0
 pre-commit>=3.7.1
-pytest>=8.0.2
+pytest>=9.0.3
 ruff>=0.14.2
 twine>=5.0.0
-setuptools>=80.0
-wheel
+setuptools>=83.0.0
+wheel>=0.38.1
